@@ -1,0 +1,7 @@
+{
+  "$id": "https://example.com/schemas/order.json",
+  "type": "object",
+  "properties": { "ref": { "type": "string" } },
+  "required": ["ref"],
+  "additionalProperties": false
+}

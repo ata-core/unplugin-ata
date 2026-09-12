@@ -1,0 +1,11 @@
+node_modules/
+package-lock.json
+test/fixtures/**/*.validator.mjs
+test/fixtures/**/*.validator.cjs
+test/fixtures/**/*.d.mts
+test/fixtures/**/*.d.cts
+test/fixtures/generated/
+.DS_Store
+test/fixtures/**/*.schema.js
+test/fixtures/**/*.schema.d.ts
+docs/superpowers/

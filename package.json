@@ -1,0 +1,87 @@
+{
+  "name": "unplugin-ata",
+  "version": "0.1.0",
+  "description": "Compile JSON, JS and TS schema files to ata-validator standalone modules at build time, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./vite": {
+      "types": "./src/vite.d.ts",
+      "default": "./src/vite.js"
+    },
+    "./webpack": {
+      "types": "./src/webpack.d.ts",
+      "default": "./src/webpack.js"
+    },
+    "./rollup": {
+      "types": "./src/rollup.d.ts",
+      "default": "./src/rollup.js"
+    },
+    "./rolldown": {
+      "types": "./src/rolldown.d.ts",
+      "default": "./src/rolldown.js"
+    },
+    "./esbuild": {
+      "types": "./src/esbuild.d.ts",
+      "default": "./src/esbuild.js"
+    },
+    "./rspack": {
+      "types": "./src/rspack.d.ts",
+      "default": "./src/rspack.js"
+    },
+    "./core": "./src/core.js"
+  },
+  "files": [
+    "src/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "unplugin",
+    "vite-plugin",
+    "webpack-plugin",
+    "rollup-plugin",
+    "esbuild-plugin",
+    "rspack-plugin",
+    "json-schema",
+    "ata-validator",
+    "typescript",
+    "codegen"
+  ],
+  "author": "Mert Can Altin <mertgold60@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ata-core/unplugin-ata.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ata-core/unplugin-ata/issues"
+  },
+  "homepage": "https://github.com/ata-core/unplugin-ata#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "peerDependencies": {
+    "ata-validator": ">=1.0.0"
+  },
+  "dependencies": {
+    "jiti": "^2.7.0",
+    "unplugin": "^3.3.0"
+  },
+  "devDependencies": {
+    "@rspack/core": "^1.7.0",
+    "ata-validator": "^1.15.0",
+    "esbuild": "^0.28.0",
+    "rolldown": "^1.2.8",
+    "rollup": "^4.60.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.2",
+    "webpack": "^5.105.0"
+  },
+  "types": "./src/index.d.ts"
+}

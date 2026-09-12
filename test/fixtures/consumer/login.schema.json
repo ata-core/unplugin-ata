@@ -1,0 +1,10 @@
+{
+  "title": "Login",
+  "type": "object",
+  "properties": {
+    "user": { "type": "string" },
+    "remember": { "type": "boolean" }
+  },
+  "required": ["user"],
+  "additionalProperties": false
+}

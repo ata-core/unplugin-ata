@@ -1,0 +1,11 @@
+{
+  "title": "User",
+  "type": "object",
+  "properties": {
+    "id": { "type": "integer", "minimum": 1 },
+    "name": { "type": "string" },
+    "role": { "type": "string", "enum": ["admin", "user"] }
+  },
+  "required": ["id", "name"],
+  "additionalProperties": false
+}

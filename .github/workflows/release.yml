@@ -1,0 +1,45 @@
+name: Release
+
+# Publishing a GitHub release publishes the same version to npm via trusted
+# publishing (OIDC). No tokens: the trusted publisher for this repo and
+# workflow must be configured on npmjs.com for the package.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g npm@latest
+      - name: Refuse a version that does not match the tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag $TAG does not match package.json $PKG" >&2
+            exit 1
+          fi
+      - run: npm install
+      - run: npm publish
