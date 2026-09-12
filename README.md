@@ -1,4 +1,4 @@
-# unplugin-ata
+# @ata-project/unplugin
 
 Compiles JSON Schema files into self-contained [ata-validator](https://ata-validator.com) modules at build time, with TypeScript declarations, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
 
@@ -9,7 +9,7 @@ Schemas can be authored as `.json`, `.js` or `.ts`.
 ## Install
 
 ```bash
-npm install --save-dev unplugin-ata ata-validator
+npm install --save-dev @ata-project/unplugin ata-validator
 ```
 
 `ata-validator` is a peer dependency and is only used at build time.
@@ -20,7 +20,7 @@ Vite:
 
 ```ts
 // vite.config.ts
-import ata from 'unplugin-ata/vite'
+import ata from '@ata-project/unplugin/vite'
 
 export default {
   plugins: [ata({ schemas: 'src/**/*.schema.json' })],
@@ -31,7 +31,7 @@ Webpack:
 
 ```js
 // webpack.config.js
-const ata = require('unplugin-ata/webpack')
+const ata = require('@ata-project/unplugin/webpack')
 
 module.exports = {
   plugins: [ata({ schemas: 'src/**/*.schema.json' })],
@@ -42,7 +42,7 @@ Rollup:
 
 ```js
 // rollup.config.js
-import ata from 'unplugin-ata/rollup'
+import ata from '@ata-project/unplugin/rollup'
 
 export default {
   // Rollup has no project root; tell the plugin where the globs start.
@@ -54,7 +54,7 @@ esbuild:
 
 ```js
 import { build } from 'esbuild'
-import ata from 'unplugin-ata/esbuild'
+import ata from '@ata-project/unplugin/esbuild'
 
 await build({
   entryPoints: ['src/main.ts'],
@@ -67,7 +67,7 @@ Rspack:
 
 ```js
 // rspack.config.js
-const ata = require('unplugin-ata/rspack')
+const ata = require('@ata-project/unplugin/rspack')
 
 module.exports = {
   plugins: [ata({ schemas: 'src/**/*.schema.json' })],
@@ -78,7 +78,7 @@ Rolldown:
 
 ```js
 // rolldown.config.js
-import ata from 'unplugin-ata/rolldown'
+import ata from '@ata-project/unplugin/rolldown'
 
 export default {
   plugins: [ata({ schemas: 'src/**/*.schema.json', root: process.cwd() })],
@@ -88,7 +88,7 @@ export default {
 Next.js uses Webpack, so the Webpack entry goes into `next.config.js`:
 
 ```js
-const ata = require('unplugin-ata/webpack')
+const ata = require('@ata-project/unplugin/webpack')
 
 module.exports = {
   webpack(config) {
@@ -166,7 +166,7 @@ and skipped; the ata-validator runtime API still validates it.
 ## Programmatic use
 
 ```js
-import { compile } from 'unplugin-ata'
+import { compile } from '@ata-project/unplugin'
 
 const { files, results } = await compile({ schemas: 'schemas/**/*.json', root: process.cwd() })
 ```
@@ -175,6 +175,12 @@ const { files, results } = await compile({ schemas: 'schemas/**/*.json', root: p
 
 `npm test` compiles the same entry with Vite, Webpack, Rollup, Rolldown,
 esbuild and Rspack, imports each bundle and runs the validator it contains.
+
+## Package name
+
+The package is `@ata-project/unplugin`; the plugin registers itself in the
+bundler as `unplugin-ata`, which is the name in log lines and in
+`plugin.name`. The unscoped name is not available on npm.
 
 ## Relation to ata-vite
 
