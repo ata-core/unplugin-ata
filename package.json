@@ -33,7 +33,8 @@
       "types": "./src/rspack.d.ts",
       "default": "./src/rspack.js"
     },
-    "./core": "./src/core.js"
+    "./core": "./src/core.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "src/"
