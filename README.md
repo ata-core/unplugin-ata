@@ -2,7 +2,7 @@
 
 Compiles JSON Schema files into self-contained [ata-validator](https://ata-validator.com) modules at build time, with TypeScript declarations, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
 
-The generated module imports nothing. A typical schema compiles to about 1 KB gzipped, exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs.
+The generated module imports nothing. A small schema compiles to about 1.4 KB gzipped and a ten-field one to about 4.8 KB, full error detail included; the module exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs.
 
 Schemas can be authored as `.json`, `.js` or `.ts`.
 
