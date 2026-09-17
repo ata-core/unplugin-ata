@@ -1,6 +1,6 @@
 {
   "name": "@ata-project/unplugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Compile JSON, JS and TS schema files to ata-validator standalone modules at build time, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack.",
   "type": "module",
   "main": "./src/index.js",
@@ -76,7 +76,7 @@
   },
   "devDependencies": {
     "@rspack/core": "^1.7.0",
-    "ata-validator": "^1.23.0",
+    "ata-validator": "^1.25.0",
     "esbuild": "^0.28.0",
     "rolldown": "^1.2.8",
     "rollup": "^4.60.0",

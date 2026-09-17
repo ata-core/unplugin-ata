@@ -270,11 +270,13 @@ async function compileOne(schemaFile, options, root, api, logger, fresh = false)
   let outSrc = validatorSrc
   let defaultRewritten = false
   if (isSchemaConvention(schemaFile) && options.format !== 'cjs') {
-    // toStandaloneModule emits `export default { validate, isValid };`.
+    // toStandaloneModule emits `export default { validate, isValid, schemaHash };`
+    // (schemaHash since ata-validator 1.25.0; earlier versions emit fewer names).
     // For the .schema convention we make the default the validate function so
-    // `import validate from './x.schema'` works. Named exports stay intact.
+    // `import validate from './x.schema'` works. Named exports stay intact, so
+    // anything else in that object list is still importable by name.
     const replaced = outSrc.replace(
-      /^export default \{\s*validate(?:\s*,\s*isValid)?\s*\};?\s*$/m,
+      /^export default \{\s*validate(?:\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*)*\s*,?\s*\};?\s*$/m,
       'export default validate;',
     )
     if (replaced !== outSrc) {

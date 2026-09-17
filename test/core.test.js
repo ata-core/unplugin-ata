@@ -53,7 +53,7 @@ describe('unplugin-ata core', () => {
       const dir = path.dirname(file)
       const mjs = await fs.readFile(path.join(dir, `${base}.validator.mjs`), 'utf8')
       const dts = await fs.readFile(path.join(dir, `${base}.validator.d.mts`), 'utf8')
-      assert.match(mjs, /export \{ validate, isValid \}/)
+      assert.match(mjs, /export \{ validate, isValid(?:, schemaHash)? \}/)
       assert.match(dts, /export declare function isValid/)
     }
   })
