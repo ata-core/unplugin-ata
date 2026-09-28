@@ -46,11 +46,11 @@ export const unpluginFactory = (userOptions = {}) => {
       if (!api.compiledModuleFor) {
         if (!session.warnedCompileAway) {
           session.warnedCompileAway = true
-          session.logger?.warn?.('[unplugin-ata] compileAway needs ata-validator 1.35.0 or later; nothing was replaced')
+          session.logger?.warn?.('[unplugin-ata] compileAway needs ata-validator 1.36.0 or later; nothing was replaced')
         }
         return null
       }
-      const out = compileAway(code, id.split('?')[0], api.compiledModuleFor)
+      const out = compileAway(code, id.split('?')[0], api)
       return out ? { code: out.code, map: out.map } : null
     },
 

@@ -15,9 +15,10 @@
 //     isValidObject(), validateJSON() or isValidJSON() on it;
 //   - ata-validator's compiledModuleFor() returns a module for the schema. It
 //     declines schemas the replacement would not answer exactly as the runtime
-//     does (defaults, custom error messages, shapes its error generator
-//     cannot express), and ata's own test suite holds the rest to the
-//     runtime's results.
+//     does (custom error messages, shapes its error generator cannot express),
+//     and ata's own test suite holds the rest to the runtime's results. The
+//     wrapper gets the schema as the runtime reads it, compiledSchemaFor(), so
+//     it fills defaults and orders errors the same way.
 // The compiled module is inlined as a function scope next to the imports; it
 // imports nothing, so no virtual module or extra file is involved.
 
@@ -184,7 +185,8 @@ function inlineModule(src, index) {
   return `const __ataCompiled${index} = (() => {\n${body}\nreturn { validate, isValid };\n})();\n`
 }
 
-export function compileAway(code, id, compiledModuleFor) {
+export function compileAway(code, id, ata) {
+  const { compiledModuleFor, compiledSchemaFor } = ata
   if (!code.includes('ata-validator')) return null
   let ast
   try {
@@ -228,7 +230,7 @@ export function compileAway(code, id, compiledModuleFor) {
     if (!src) continue
     const index = modules.length
     modules.push(inlineModule(src, index))
-    s.overwrite(expr.start, expr.end, `__ataFromCompiled(__ataCompiled${index}, ${JSON.stringify(schema)})`)
+    s.overwrite(expr.start, expr.end, `__ataFromCompiled(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))})`)
     done.add(expr)
   }
   if (done.size === 0) return null

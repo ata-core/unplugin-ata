@@ -20,4 +20,14 @@ export const isValidObject = (d) => check.isValidObject(d)
 export const validateJSON = (t) => check.validateJSON(t)
 export const isValidJSON = (t) => check.isValidJSON(t)
 export const nameOk = (s) => shortName.isValidObject(s)
-export { Body }
+const Settings = {
+  type: 'object',
+  properties: {
+    theme: { type: 'string', enum: ['light', 'dark'], default: 'light' },
+    notify: { type: 'object', properties: { email: { type: 'boolean', default: true }, every: { type: 'integer', minimum: 1, default: 7 } }, default: {} },
+  },
+}
+const settings = new Validator(Settings)
+export const validateSettings = (d) => settings.validate(d)
+
+export { Body, Settings }

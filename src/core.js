@@ -63,7 +63,13 @@ async function loadAta() {
   }
   // compiledModuleFor exists from ata-validator 1.35.0; compile-away needs it
   // and is skipped with a warning when it is missing.
-  return { ...api, toStandaloneModule: build.toStandaloneModule, compiledModuleFor: typeof build.compiledModuleFor === 'function' ? build.compiledModuleFor : null }
+  const canCompileAway = typeof build.compiledModuleFor === 'function' && typeof build.compiledSchemaFor === 'function'
+  return {
+    ...api,
+    toStandaloneModule: build.toStandaloneModule,
+    compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,
+    compiledSchemaFor: canCompileAway ? build.compiledSchemaFor : null,
+  }
 }
 
 function ensureArray(value) {

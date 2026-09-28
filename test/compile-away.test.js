@@ -17,7 +17,7 @@ import { compileAway } from '../src/compile-away.js'
 
 const require = createRequire(import.meta.url)
 const { Validator } = require('ata-validator')
-const { compiledModuleFor } = require('ata-validator/build')
+const ata = require('ata-validator/build')
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(here, 'fixtures', 'compile-away')
@@ -60,6 +60,12 @@ async function check(file) {
   assert.equal(JSON.stringify(mod.validateJSON('{"id": 1,')), JSON.stringify(runtime.validateJSON('{"id": 1,')), 'malformed JSON')
   const data = { id: 2, name: 'b' }
   assert.equal(mod.validate(data).data, data, 'a valid result carries the input as data')
+  // Defaults are filled in before the check, as the runtime fills them.
+  const settingsRuntime = new Validator(mod.Settings)
+  assert.ok(src.includes('__ataCompiled2'), 'the schema with defaults was compiled away too')
+  for (const d of [{}, { theme: 'dark' }, { notify: {} }, { notify: { every: 0 } }, { theme: 'blue' }, { notify: 'x' }]) {
+    assert.equal(JSON.stringify(mod.validateSettings(structuredClone(d))), JSON.stringify(settingsRuntime.validate(structuredClone(d))), `settings ${JSON.stringify(d)}`)
+  }
   assert.equal(mod.nameOk('ab'), true)
   assert.equal(mod.nameOk('a'), false)
 }
@@ -137,16 +143,16 @@ describe('compileAway in every bundler', () => {
 })
 
 describe('compileAway decides conservatively', () => {
-  const run = (code, file = path.join(root, 'x.ts')) => compileAway(code, file, compiledModuleFor)
+  const run = (code, file = path.join(root, 'x.ts')) => compileAway(code, file, ata)
   const head = "import { Validator, defineSchema } from 'ata-validator'\n"
 
   it('replaces a literal, a const, a .json import and defineSchema, in TypeScript', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unplugin-ata-json-'))
     await fs.writeFile(path.join(dir, 'user.schema.json'), JSON.stringify({ type: 'object', properties: { n: { type: 'integer' } } }))
-    const out = compileAway(head + "import user from './user.schema.json'\nconst S = { type: 'string' } as const satisfies object\nconst a = new Validator({ type: 'integer' })\nconst b = new Validator(S)\nconst c = new Validator(user)\nconst d = new Validator(defineSchema({ type: 'boolean' }))\nexport const f = (x: unknown) => a.isValidObject(x) && b.validate(x).valid && c.isValidJSON('1') && d.validateJSON('true').valid\n", path.join(dir, 'app.ts'), compiledModuleFor)
+    const out = compileAway(head + "import user from './user.schema.json'\nconst S = { type: 'string' } as const satisfies object\nconst a = new Validator({ type: 'integer' })\nconst b = new Validator(S)\nconst c = new Validator(user)\nconst d = new Validator(defineSchema({ type: 'boolean' }))\nexport const f = (x: unknown) => a.isValidObject(x) && b.validate(x).valid && c.isValidJSON('1') && d.validateJSON('true').valid\n", path.join(dir, 'app.ts'), ata)
     assert.equal(out.replaced, 4)
     assert.doesNotMatch(out.code, /from 'ata-validator'/, 'the runtime import goes once nothing uses it')
-    const kept = compileAway(head + "const a = new Validator({ type: 'integer' })\nconst S = defineSchema({ type: 'string' })\nexport const f = (x) => a.isValidObject(x) && S\n", path.join(root, 'k.ts'), compiledModuleFor)
+    const kept = compileAway(head + "const a = new Validator({ type: 'integer' })\nconst S = defineSchema({ type: 'string' })\nexport const f = (x) => a.isValidObject(x) && S\n", path.join(root, 'k.ts'), ata)
     assert.match(kept.code, /import \{ defineSchema \} from 'ata-validator'/, 'a specifier still in use stays')
   })
 
@@ -171,7 +177,6 @@ describe('compileAway decides conservatively', () => {
   })
 
   it('leaves a call alone when ata declines the schema', () => {
-    assert.equal(run(head + "const v = new Validator({ type: 'object', properties: { a: { type: 'string', default: 'x' } } })\nv.validate({})\n"), null)
     assert.equal(run(head + "const v = new Validator({ type: 'object', properties: { 'a\\nb': { type: 'number' } } })\nv.validate({})\n"), null)
     assert.equal(run(head + "const v = new Validator({ type: 'string', errorMessage: 'no' })\nv.validate(1)\n"), null)
   })
