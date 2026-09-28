@@ -21,6 +21,15 @@ export interface Options {
   root?: string
   /** Aliases for imports inside `.ts` schema files. Vite's `resolve.alias` is picked up. */
   alias?: Record<string, string>
+  /**
+   * Replace `new Validator(schema)` with a validator compiled at build time
+   * wherever the schema can be read without running code and the instance is
+   * only used through validate(), isValidObject(), validateJSON() and
+   * isValidJSON(), so the runtime compiler stays out of the bundle. Results are
+   * the ones the runtime gives. Needs ata-validator 1.35.0 or later.
+   * Default: `false`.
+   */
+  compileAway?: boolean
 }
 
 export interface CompileResult {

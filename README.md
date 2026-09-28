@@ -145,6 +145,54 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `nameFromFile` | file name in PascalCase | Type name for schemas without `title` or `$id`. |
 | `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context` and esbuild's `absWorkingDir` are read; Rollup and Rolldown need it passed. |
 | `alias` | Vite's `resolve.alias` | Import aliases inside `.ts` schema files. tsconfig `paths` work without configuration. |
+| `compileAway` | `false` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.35.0. |
+
+## compileAway: keep `new Validator`, drop the compiler
+
+With `compileAway: true`, code written against the runtime API is compiled at
+build time without being changed:
+
+```js
+import { Validator } from 'ata-validator'
+
+const check = new Validator({
+  type: 'object',
+  properties: { id: { type: 'integer', minimum: 1 }, name: { type: 'string', minLength: 1 } },
+  required: ['id', 'name'],
+})
+
+export const handle = (body) => check.validate(body)
+```
+
+The plugin puts a compiled validator in place of the `new Validator(...)` call,
+and once nothing else in the file uses the `ata-validator` import, the import
+goes with it, so the runtime compiler is not in the bundle. For the two-schema
+entry in `test/fixtures/compile-away`, a minified Vite library build is
+115.5 KB gzipped without it and 14.3 KB with it, on ata-validator 1.35.0.
+
+The replacement answers `validate()`, `isValidObject()`, `validateJSON()` and
+`isValidJSON()` as a `Validator` with default options does: the same verdicts,
+`data` on success, and the same errors, enriched the same way, since they come
+from the same code in ata-validator. ata-validator's own tests hold that over
+every case of the official JSON Schema test suite.
+
+A call is replaced only when all of this is true, and left to the runtime
+otherwise:
+
+- `Validator` is a named import from `ata-validator`;
+- the call has one argument, and it is an object literal, a top-level `const`
+  bound to one, the default import of a relative `.json` file, or
+  `defineSchema(...)` around one of those;
+- the result goes into a `const` that is not exported and is only used as
+  `name.validate(...)`, `name.isValidObject(...)`, `name.validateJSON(...)` or
+  `name.isValidJSON(...)`;
+- ata-validator can compile the schema to the same results. It declines
+  schemas with `default` anywhere (the runtime applies defaults, the compiled
+  module does not), custom `errorMessage`s, and shapes its error generator
+  cannot express, such as some `unevaluatedProperties` schemas.
+
+Anything with options (`new Validator(schema, { coerceTypes: true })`), a schema
+built at run time, or an instance passed around stays as written.
 
 ## How it works
 
@@ -174,7 +222,10 @@ const { files, results } = await compile({ schemas: 'schemas/**/*.json', root: p
 ## Tests
 
 `npm test` compiles the same entry with Vite, Webpack, Rollup, Rolldown,
-esbuild and Rspack, imports each bundle and runs the validator it contains.
+esbuild and Rspack, imports each bundle and runs the validator it contains. The
+compileAway tests build a second entry with all six, check that neither the
+runtime compiler nor the interpreter is in the output, and compare every answer
+with `new Validator`; the decline rules are tested on their own.
 
 ## Package name
 

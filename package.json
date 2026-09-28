@@ -71,7 +71,9 @@
     "ata-validator": ">=1.0.0"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.9",
     "jiti": "^2.7.0",
+    "magic-string": "^1.4.2",
     "unplugin": "^3.3.0"
   },
   "devDependencies": {

@@ -41,6 +41,7 @@ const DEFAULT_OPTIONS = {
   format: 'esm',
   abortEarly: false,
   types: true,
+  compileAway: false,
   nameFromFile: (file) => {
     const base = path.basename(file, path.extname(file)).replace(/\.schema$/i, '')
     return pascal(base)
@@ -60,7 +61,9 @@ async function loadAta() {
       'unplugin-ata requires ata-validator >= 0.19.0 with the ata-validator/build entry.',
     )
   }
-  return { ...api, toStandaloneModule: build.toStandaloneModule }
+  // compiledModuleFor exists from ata-validator 1.35.0; compile-away needs it
+  // and is skipped with a warning when it is missing.
+  return { ...api, toStandaloneModule: build.toStandaloneModule, compiledModuleFor: typeof build.compiledModuleFor === 'function' ? build.compiledModuleFor : null }
 }
 
 function ensureArray(value) {
@@ -336,6 +339,10 @@ export function createSession(userOptions = {}) {
         files.map((file) => compileOne(file, options, session.root, api, session.logger)),
       )
       return { files, results }
+    },
+    // ata-validator itself, loaded once for every hook that needs it.
+    api() {
+      return (apiPromise ??= loadAta())
     },
     async compileIfMatching(file) {
       if (!file) return null
