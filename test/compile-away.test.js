@@ -63,8 +63,13 @@ async function check(file) {
   // Defaults are filled in before the check, as the runtime fills them.
   const settingsRuntime = new Validator(mod.Settings)
   assert.ok(src.includes('__ataCompiled2'), 'the schema with defaults was compiled away too')
+  const asIsRuntime = new Validator(mod.Settings, { useDefaults: false })
+  assert.ok(src.includes('__ataCompiled3'), 'the call with { useDefaults: false } was compiled away too')
   for (const d of [{}, { theme: 'dark' }, { notify: {} }, { notify: { every: 0 } }, { theme: 'blue' }, { notify: 'x' }]) {
     assert.equal(JSON.stringify(mod.validateSettings(structuredClone(d))), JSON.stringify(settingsRuntime.validate(structuredClone(d))), `settings ${JSON.stringify(d)}`)
+    const a = structuredClone(d), b = structuredClone(d)
+    assert.equal(JSON.stringify(mod.validateSettingsAsIs(a)), JSON.stringify(asIsRuntime.validate(b)), `settings, useDefaults: false, ${JSON.stringify(d)}`)
+    assert.equal(JSON.stringify(a), JSON.stringify(b), 'useDefaults: false leaves the input as the runtime does')
   }
   assert.equal(mod.nameOk('ab'), true)
   assert.equal(mod.nameOk('a'), false)
@@ -173,7 +178,22 @@ describe('compileAway decides conservatively', () => {
     assert.equal(run(head + `const v = new Validator(${s})\nv['validate'](1)\n`), null)
     assert.equal(run(head + `let v = new Validator(${s})\nv.validate(1)\n`), null)
     assert.equal(run(head + `const v = new Validator(${s}, { coerceTypes: true })\nv.validate(1)\n`), null)
+    assert.equal(run(head + `const v = new Validator(${s}, { useDefaults: false, coerceTypes: true })\nv.validate(1)\n`), null)
+    assert.equal(run(head + `const v = new Validator(${s}, { useDefaults: flag })\nv.validate(1)\n`), null)
+    assert.equal(run(head + `const o = load()\nconst v = new Validator(${s}, o)\nv.validate(1)\n`), null)
     assert.equal(run(head + `function f () { const v = new Validator(${s}); return v }\n`), null)
+  })
+
+  it('replaces a call with { useDefaults: false } only when ata-validator reproduces it', () => {
+    const s = "{ type: 'object', properties: { n: { type: 'integer', default: 1 } } }"
+    const code = head + `const o = { useDefaults: false }\nconst v = new Validator(${s}, o)\nexport const f = (x) => v.validate(x)\n`
+    const out = run(code)
+    assert.ok(out && out.replaced === 1, 'replaced')
+    assert.match(out.code, /__ataFromCompiled\(__ataCompiled0, .*, \{"useDefaults":false\}\)/)
+    const old = compileAway(code, path.join(root, 'x.ts'), { ...ata, compiledOptions: undefined })
+    assert.equal(old, null, 'an ata-validator without compiledOptions keeps calls with options on the runtime')
+    const dflt = run(head + `const v = new Validator(${s}, { useDefaults: true })\nexport const f = (x) => v.validate(x)\n`)
+    assert.ok(dflt && !/useDefaults/.test(dflt.code.split('__ataFromCompiled(')[1] || ''), 'useDefaults: true needs no argument')
   })
 
   it('leaves a call alone when ata declines the schema', () => {

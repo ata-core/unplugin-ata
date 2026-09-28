@@ -185,8 +185,24 @@ function inlineModule(src, index) {
   return `const __ataCompiled${index} = (() => {\n${body}\nreturn { validate, isValid };\n})();\n`
 }
 
+// The options of `new Validator(schema, options)` as a third argument for
+// fromCompiled(), or NOT_STATIC when the call has to stay on the runtime: options
+// that are not a literal the build can read, or that name anything this
+// ata-validator's wrapper does not reproduce. `useDefaults: true` is the default
+// and needs no argument.
+function compiledOptionsArg(node, ctx, supported) {
+  const opts = staticValue(node, ctx)
+  if (opts === NOT_STATIC || opts === null || typeof opts !== 'object' || Array.isArray(opts)) return NOT_STATIC
+  for (const [key, value] of Object.entries(opts)) {
+    if (!supported.includes(key)) return NOT_STATIC
+    if (key === 'useDefaults' && typeof value !== 'boolean') return NOT_STATIC
+  }
+  return opts.useDefaults === false ? '{"useDefaults":false}' : ''
+}
+
 export function compileAway(code, id, ata) {
   const { compiledModuleFor, compiledSchemaFor } = ata
+  const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator')) return null
   let ast
   try {
@@ -221,7 +237,13 @@ export function compileAway(code, id, ata) {
   for (const r of refs) {
     if (r.node.name !== validatorName) continue
     const expr = r.parent
-    if (!expr || expr.type !== 'NewExpression' || r.key !== 'callee' || expr.arguments.length !== 1) continue
+    if (!expr || expr.type !== 'NewExpression' || r.key !== 'callee') continue
+    if (expr.arguments.length !== 1 && expr.arguments.length !== 2) continue
+    let optionsArg = ''
+    if (expr.arguments.length === 2) {
+      optionsArg = compiledOptionsArg(expr.arguments[1], ctx, supportedOptions)
+      if (optionsArg === NOT_STATIC) continue
+    }
     if (!replaceableBinding(expr, ctx)) continue
     const schema = staticValue(expr.arguments[0], ctx)
     if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
@@ -230,7 +252,7 @@ export function compileAway(code, id, ata) {
     if (!src) continue
     const index = modules.length
     modules.push(inlineModule(src, index))
-    s.overwrite(expr.start, expr.end, `__ataFromCompiled(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))})`)
+    s.overwrite(expr.start, expr.end, `__ataFromCompiled(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
     done.add(expr)
   }
   if (done.size === 0) return null

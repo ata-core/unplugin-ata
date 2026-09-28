@@ -183,9 +183,13 @@ A call is replaced only when all of this is true, and left to the runtime
 otherwise:
 
 - `Validator` is a named import from `ata-validator`;
-- the call has one argument, and it is an object literal, a top-level `const`
-  bound to one, the default import of a relative `.json` file, or
-  `defineSchema(...)` around one of those;
+- the schema argument is an object literal, a top-level `const` bound to one,
+  the default import of a relative `.json` file, or `defineSchema(...)` around
+  one of those;
+- there is no second argument, or it is `{ useDefaults: false }` (or
+  `{ useDefaults: true }`), written as a literal or a top-level `const`; that
+  one option needs ata-validator 1.37.0, and older versions keep such calls on
+  the runtime;
 - the result goes into a `const` that is not exported and is only used as
   `name.validate(...)`, `name.isValidObject(...)`, `name.validateJSON(...)` or
   `name.isValidJSON(...)`;
@@ -193,7 +197,7 @@ otherwise:
   `errorMessage`s and shapes its code generator cannot express, which the
   runtime answers with its interpreted engine.
 
-Anything with options (`new Validator(schema, { coerceTypes: true })`), a schema
+Any other option (`new Validator(schema, { coerceTypes: true })`), a schema
 built at run time, or an instance passed around stays as written.
 
 ## How it works

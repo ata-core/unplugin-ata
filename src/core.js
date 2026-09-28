@@ -69,6 +69,9 @@ async function loadAta() {
     toStandaloneModule: build.toStandaloneModule,
     compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,
     compiledSchemaFor: canCompileAway ? build.compiledSchemaFor : null,
+    // The Validator options fromCompiled() reproduces, from ata-validator
+    // 1.37.0; before it, only calls without options are replaced.
+    compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
   }
 }
 

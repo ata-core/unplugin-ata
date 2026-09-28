@@ -29,5 +29,9 @@ const Settings = {
 }
 const settings = new Validator(Settings)
 export const validateSettings = (d) => settings.validate(d)
+// The one option compile-away takes: defaults are left unfilled.
+const kNoDefaults = { useDefaults: false }
+const settingsAsIs = new Validator(Settings, kNoDefaults)
+export const validateSettingsAsIs = (d) => settingsAsIs.validate(d)
 
 export { Body, Settings }
