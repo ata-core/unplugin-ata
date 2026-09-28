@@ -2,7 +2,7 @@
 
 Compiles JSON Schema files into self-contained [ata-validator](https://ata-validator.com) modules at build time, with TypeScript declarations, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
 
-The generated module imports nothing. A small schema compiles to about 1.4 KB gzipped and a ten-field one to about 4.8 KB, full error detail included; the module exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs.
+The generated module imports nothing. A small schema compiles to about 1.3 KB gzipped and a ten-field one to about 2.6 KB, full error detail included, on ata-validator 1.36.0; the module exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs.
 
 Schemas can be authored as `.json`, `.js` or `.ts`.
 
@@ -168,8 +168,8 @@ The plugin puts a compiled validator in place of the `new Validator(...)` call,
 and once nothing else in the file uses the `ata-validator` import, the import
 goes with it, so the runtime compiler is not in the bundle. For the three-schema
 entry in `test/fixtures/compile-away`, one of them with defaults, a minified Vite
-library build is 117.2 KB gzipped without it and 15.5 KB with it, on
-ata-validator 1.36.0. Across the 977 schemas of SchemaStore, 642 can be compiled
+library build is 115.7 KB gzipped without it and 15.5 KB with it, on
+ata-validator 1.36.0. Across the 977 schemas of SchemaStore, 725 can be compiled
 away this way.
 
 The replacement answers `validate()`, `isValidObject()`, `validateJSON()` and
