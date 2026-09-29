@@ -1,7 +1,7 @@
 {
   "name": "@ata-project/unplugin",
   "version": "0.3.0",
-  "description": "Compile JSON, JS and TS schema files to ata-validator standalone modules at build time, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack.",
+  "description": "Build-time JSON Schema for Vite, Webpack, Rollup, Rolldown, esbuild and Rspack. compileAway takes the runtime compiler out of the bundle.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
