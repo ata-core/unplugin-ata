@@ -179,7 +179,8 @@ away this way.
 
 Where the code only ever calls `isValidObject()` or `isValidJSON()`, the plugin
 uses a smaller wrapper without the error machinery (needs ata-validator 1.40.0):
-a small app that only asks for a boolean bundles to 2.1 KB gzipped.
+a small app that only asks for a boolean bundles to 2.6 KB gzipped, against 12.1 KB with
+the full wrapper and 102.0 KB for the runtime, on 0.5.0 with ata-validator 1.40.0.
 
 The replacement answers `validate()`, `isValidObject()`, `validateJSON()` and
 `isValidJSON()` as a `Validator` with default options does: the same verdicts,
