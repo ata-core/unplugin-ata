@@ -86,7 +86,8 @@ describe('compileAway in every bundler', () => {
     await bundle.close()
     try {
       const out = await fs.readFile(path.join(dir, 'out.mjs'), 'utf8')
-      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]), ['ata-validator/compiled'])
+      // `shortName` only asks for a boolean, so it takes the verdict wrapper.
+      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), ['ata-validator/compiled', 'ata-validator/compiled-verdict'])
       await check(path.join(dir, 'out.mjs'))
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
@@ -164,6 +165,37 @@ describe('compileAway is on by default', () => {
     const src = await fs.readFile(await build('off', { schemas: 'none/*.json', compileAway: false }), 'utf8')
     assert.ok(src.includes(RUNTIME_MARKER), 'turning it off keeps the runtime')
     assert.ok(!src.includes('__ataCompiled0'), 'turning it off replaces nothing')
+  })
+})
+
+describe('compileAway picks the smaller wrapper when errors are never read', () => {
+  const head = "import { Validator } from 'ata-validator'\n"
+  const file = path.join(root, 'v.ts')
+  const withVerdict = { ...ata, compiledVerdict: true }
+
+  it('uses the verdict wrapper for isValidObject and isValidJSON only', () => {
+    const out = compileAway(head + "const v = new Validator({ type: 'integer' })\nexport const f = (x) => v.isValidObject(x) && v.isValidJSON('1')\n", file, withVerdict)
+    assert.ok(out.code.includes("from 'ata-validator/compiled-verdict'"))
+    assert.ok(!out.code.includes("from 'ata-validator/compiled'"))
+    assert.ok(out.code.includes('return { isValid };'), 'the error function is not handed out')
+  })
+
+  it('keeps the full wrapper once any call reads errors', () => {
+    const out = compileAway(head + "const v = new Validator({ type: 'integer' })\nexport const f = (x) => v.isValidObject(x) && v.validate(x)\n", file, withVerdict)
+    assert.ok(out.code.includes("from 'ata-validator/compiled'"))
+    assert.ok(!out.code.includes('compiled-verdict'))
+  })
+
+  it('imports each wrapper once when a file needs both', () => {
+    const out = compileAway(head + "const a = new Validator({ type: 'integer' })\nconst b = new Validator({ type: 'string' })\nexport const f = (x) => a.isValidObject(x) && b.validate(x)\n", file, withVerdict)
+    assert.equal(out.code.split("from 'ata-validator/compiled-verdict'").length - 1, 1)
+    assert.equal(out.code.split("from 'ata-validator/compiled'").length - 1, 1)
+  })
+
+  it('stays on the full wrapper with an ata-validator that has no verdict entry', () => {
+    const out = compileAway(head + "const v = new Validator({ type: 'integer' })\nexport const f = (x) => v.isValidObject(x)\n", file, { ...ata, compiledVerdict: false })
+    assert.ok(out.code.includes("from 'ata-validator/compiled'"))
+    assert.ok(!out.code.includes('compiled-verdict'))
   })
 })
 

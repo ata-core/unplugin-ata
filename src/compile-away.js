@@ -170,19 +170,27 @@ function replaceableBinding(newExpr, ctx) {
   if (list.__parent && list.__parent.type === 'ExportNamedDeclaration') return null
   const name = decl.id.name
   if (ctx.declared.get(name) !== 1) return null
+  const methods = new Set()
   for (const r of ctx.refs) {
     if (r.node.name !== name) continue
     const p = r.parent
     const member = p && (p.type === 'MemberExpression' || p.type === 'OptionalMemberExpression') && r.key === 'object' && !p.computed && p.property.type === 'Identifier' && METHODS.has(p.property.name)
     const called = member && p.__parent && (p.__parent.type === 'CallExpression' || p.__parent.type === 'OptionalCallExpression') && p.__parent.callee === p
     if (!called) return null
+    methods.add(p.property.name)
   }
-  return name
+  return { name, methods }
 }
 
-function inlineModule(src, index) {
+// Code that only asks for a boolean never reads an error.
+const VERDICT_METHODS = new Set(['isValidObject', 'isValidJSON'])
+const verdictOnly = (methods) => [...methods].every((m) => VERDICT_METHODS.has(m))
+
+// A verdict-only module hands out isValid alone, so the error function inside
+// it is unreferenced and the bundler drops it.
+function inlineModule(src, index, verdict) {
   const body = src.split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
-  return `const __ataCompiled${index} = (() => {\n${body}\nreturn { validate, isValid };\n})();\n`
+  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${verdict ? '{ isValid }' : '{ validate, isValid }'};\n})();\n`
 }
 
 // The options of `new Validator(schema, options)` as a third argument for
@@ -234,6 +242,7 @@ export function compileAway(code, id, ata) {
   const s = new MagicString(code)
   const modules = []
   const done = new Set()
+  const wrappers = { full: false, verdict: false }
   for (const r of refs) {
     if (r.node.name !== validatorName) continue
     const expr = r.parent
@@ -244,15 +253,19 @@ export function compileAway(code, id, ata) {
       optionsArg = compiledOptionsArg(expr.arguments[1], ctx, supportedOptions)
       if (optionsArg === NOT_STATIC) continue
     }
-    if (!replaceableBinding(expr, ctx)) continue
+    const binding = replaceableBinding(expr, ctx)
+    if (!binding) continue
     const schema = staticValue(expr.arguments[0], ctx)
     if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
     let src = null
     try { src = compiledModuleFor(schema, { format: 'esm' }) } catch { src = null }
     if (!src) continue
     const index = modules.length
-    modules.push(inlineModule(src, index))
-    s.overwrite(expr.start, expr.end, `__ataFromCompiled(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
+    const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
+    modules.push(inlineModule(src, index, verdict))
+    const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
+    if (verdict) wrappers.verdict = true; else wrappers.full = true
+    s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
     done.add(expr)
   }
   if (done.size === 0) return null
@@ -278,7 +291,8 @@ export function compileAway(code, id, ata) {
     const clause = [def ? text(def) : null, named.length ? `{ ${named.map(text).join(', ')} }` : null].filter(Boolean).join(', ')
     s.overwrite(importDecl.start, importDecl.end, `import ${clause} from ${code.slice(importDecl.source.start, importDecl.source.end)}`)
   }
-  s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
+  if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
+  if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
   return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size }
 }

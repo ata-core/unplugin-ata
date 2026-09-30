@@ -64,6 +64,12 @@ async function loadAta() {
   // compiledModuleFor exists from ata-validator 1.35.0; compile-away needs it
   // and is skipped with a warning when it is missing.
   const canCompileAway = typeof build.compiledModuleFor === 'function' && typeof build.compiledSchemaFor === 'function'
+  // The verdict-only wrapper, from ata-validator 1.40.0: code that never reads
+  // errors gets it and the error pipeline stays out of the bundle.
+  let compiledVerdict = false
+  if (canCompileAway) {
+    try { compiledVerdict = typeof (await import('ata-validator/compiled-verdict')).fromCompiledVerdict === 'function' } catch { compiledVerdict = false }
+  }
   return {
     ...api,
     toStandaloneModule: build.toStandaloneModule,
@@ -72,6 +78,7 @@ async function loadAta() {
     // The Validator options fromCompiled() reproduces, from ata-validator
     // 1.37.0; before it, only calls without options are replaced.
     compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
+    compiledVerdict,
   }
 }
 
