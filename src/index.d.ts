@@ -27,7 +27,7 @@ export interface Options {
    * only used through validate(), isValidObject(), validateJSON() and
    * isValidJSON(), so the runtime compiler stays out of the bundle. Results are
    * the ones the runtime gives. Needs ata-validator 1.35.0 or later.
-   * Default: `false`.
+   * Default: `true`; `false` turns it off.
    */
   compileAway?: boolean
 }

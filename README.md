@@ -6,6 +6,11 @@ The generated module imports nothing. A small schema compiles to about 1.3 KB gz
 
 Schemas can be authored as `.json`, `.js` or `.ts`.
 
+It also compiles away `new Validator(schema)` in your own code wherever the schema
+is known at build time and the result is the same, so the runtime compiler stays
+out of the bundle: for the test entry, 122.5 KB gzipped becomes 16.7 KB. See
+[compileAway](#compileaway-keep-new-validator-drop-the-compiler).
+
 ## Install
 
 ```bash
@@ -145,12 +150,12 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `nameFromFile` | file name in PascalCase | Type name for schemas without `title` or `$id`. |
 | `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context` and esbuild's `absWorkingDir` are read; Rollup and Rolldown need it passed. |
 | `alias` | Vite's `resolve.alias` | Import aliases inside `.ts` schema files. tsconfig `paths` work without configuration. |
-| `compileAway` | `false` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.36.0. |
+| `compileAway` | `true` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.36.0; with an older version the runtime stays, and a warning is printed only if you set the option yourself. |
 
 ## compileAway: keep `new Validator`, drop the compiler
 
-With `compileAway: true`, code written against the runtime API is compiled at
-build time without being changed:
+Code written against the runtime API is compiled at build time without being
+changed. This is on by default; `compileAway: false` turns it off.
 
 ```js
 import { Validator } from 'ata-validator'
@@ -168,8 +173,8 @@ The plugin puts a compiled validator in place of the `new Validator(...)` call,
 and once nothing else in the file uses the `ata-validator` import, the import
 goes with it, so the runtime compiler is not in the bundle. For the three-schema
 entry in `test/fixtures/compile-away`, one of them with defaults, a minified Vite
-library build is 115.7 KB gzipped without it and 15.5 KB with it, on
-ata-validator 1.36.0. Across the 977 schemas of SchemaStore, 725 can be compiled
+library build is 122.5 KB gzipped without it and 16.7 KB with it (gzip level 9), on
+ata-validator 1.39.2. Across the 977 schemas of SchemaStore, 725 can be compiled
 away this way.
 
 The replacement answers `validate()`, `isValidObject()`, `validateJSON()` and

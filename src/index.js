@@ -34,8 +34,11 @@ export const unpluginFactory = (userOptions = {}) => {
     // compileAway: `new Validator(schema)` with a schema the build can read
     // becomes a validator compiled here, and the runtime compiler leaves the
     // bundle. See src/compile-away.js for what is replaced and what is not.
+    // On unless the caller turned it off. It replaces a call only where the
+    // compiled validator answers exactly as the runtime would, so being on by
+    // default can cost a saving but not change a result.
     transformInclude(id) {
-      if (!userOptions.compileAway) return false
+      if (userOptions.compileAway === false) return false
       const file = id.split('?')[0]
       return SOURCE.test(file) && !file.split(/[\\/]/).includes('node_modules')
     },
@@ -44,7 +47,9 @@ export const unpluginFactory = (userOptions = {}) => {
       if (!code.includes('ata-validator')) return null
       const api = await session.api()
       if (!api.compiledModuleFor) {
-        if (!session.warnedCompileAway) {
+        // Only a caller who asked for it hears that it could not happen; on
+        // by default, an older ata-validator just keeps the runtime.
+        if (userOptions.compileAway === true && !session.warnedCompileAway) {
           session.warnedCompileAway = true
           session.logger?.warn?.('[unplugin-ata] compileAway needs ata-validator 1.36.0 or later; nothing was replaced')
         }

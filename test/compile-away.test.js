@@ -147,6 +147,26 @@ describe('compileAway in every bundler', () => {
   }
 })
 
+describe('compileAway is on by default', () => {
+  const build = async (name, opts) => {
+    const esbuild = await import('esbuild')
+    const dir = await outDir(name)
+    const out = path.join(dir, 'out.mjs')
+    await esbuild.build({ entryPoints: [entry], absWorkingDir: root, bundle: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild(opts)], logLevel: 'silent' })
+    return out
+  }
+
+  it('replaces calls when the option is not given', async () => {
+    await check(await build('default', { schemas: 'none/*.json' }))
+  })
+
+  it('leaves the runtime in place with compileAway: false', async () => {
+    const src = await fs.readFile(await build('off', { schemas: 'none/*.json', compileAway: false }), 'utf8')
+    assert.ok(src.includes(RUNTIME_MARKER), 'turning it off keeps the runtime')
+    assert.ok(!src.includes('__ataCompiled0'), 'turning it off replaces nothing')
+  })
+})
+
 describe('compileAway decides conservatively', () => {
   const run = (code, file = path.join(root, 'x.ts')) => compileAway(code, file, ata)
   const head = "import { Validator, defineSchema } from 'ata-validator'\n"
@@ -206,8 +226,11 @@ describe('compileAway decides conservatively', () => {
     assert.equal(run("class Validator {}\nconst v = new Validator({ type: 'string' })\nv.validate(1)\n"), null)
   })
 
-  it('is off unless asked for', () => {
-    const plugin = unplugin.vite({ schemas: 'none/*.json' })
-    assert.equal(plugin.transformInclude?.('/x/app.ts') ?? false, false)
+  it('is on unless turned off, and never touches node_modules', () => {
+    const on = unplugin.vite({ schemas: 'none/*.json' })
+    assert.equal(on.transformInclude('/x/app.ts'), true)
+    assert.equal(on.transformInclude('/x/node_modules/lib/app.js'), false)
+    const off = unplugin.vite({ schemas: 'none/*.json', compileAway: false })
+    assert.equal(off.transformInclude('/x/app.ts'), false)
   })
 })

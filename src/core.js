@@ -41,7 +41,7 @@ const DEFAULT_OPTIONS = {
   format: 'esm',
   abortEarly: false,
   types: true,
-  compileAway: false,
+  compileAway: true,
   nameFromFile: (file) => {
     const base = path.basename(file, path.extname(file)).replace(/\.schema$/i, '')
     return pascal(base)
