@@ -77,6 +77,7 @@
     "unplugin": "^3.3.0"
   },
   "devDependencies": {
+    "@ata-project/keywords": "^0.3.3",
     "@rspack/core": "^1.7.0",
     "ata-validator": "^1.39.2",
     "esbuild": "^0.28.0",

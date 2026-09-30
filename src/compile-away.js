@@ -163,8 +163,18 @@ function constantsOf(ast, id) {
 // `const name = new Validator(...)`, declared once, not exported, and used only
 // as `name.<method>(...)` with a supported method.
 function replaceableBinding(newExpr, ctx) {
-  const decl = newExpr.__parent
-  if (!decl || decl.type !== 'VariableDeclarator' || decl.init !== newExpr || decl.id.type !== 'Identifier') return null
+  let decl = newExpr.__parent
+  // `withKeywords(new Validator(schema))` from @ata-project/keywords: the
+  // wrapper takes the keywords' check the way a Validator does, so the inner
+  // call is replaced and withKeywords stays to register the check on it.
+  if (decl && decl.type === 'CallExpression' && ctx.withKeywords && ctx.extendChecks &&
+      decl.callee.type === 'Identifier' && decl.callee.name === ctx.withKeywords &&
+      ctx.declared.get(ctx.withKeywords) === 1 && decl.arguments.length === 1 && decl.arguments[0] === newExpr) {
+    decl = decl.__parent
+    if (!decl || decl.type !== 'VariableDeclarator' || decl.init !== newExpr.__parent) return null
+  }
+  if (!decl || decl.type !== 'VariableDeclarator' || decl.id.type !== 'Identifier') return null
+  if (decl.init !== newExpr && decl.init !== newExpr.__parent) return null
   const list = decl.__parent
   if (!list || list.type !== 'VariableDeclaration' || list.kind !== 'const') return null
   if (list.__parent && list.__parent.type === 'ExportNamedDeclaration') return null
@@ -234,10 +244,19 @@ export function compileAway(code, id, ata) {
     }
   }
   if (!validatorName) return null
+  let withKeywords = null
+  for (const stmt of ast.program.body) {
+    if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== '@ata-project/keywords' || stmt.importKind === 'type') continue
+    for (const sp of stmt.specifiers) {
+      if (sp.type !== 'ImportSpecifier' || sp.importKind === 'type') continue
+      const imported = sp.imported.type === 'Identifier' ? sp.imported.name : sp.imported.value
+      if (imported === 'withKeywords') withKeywords = sp.local.name
+    }
+  }
 
   const { declared, refs } = scan(ast)
   if (declared.get(validatorName) !== 1) return null
-  const ctx = { declared, refs, constants: constantsOf(ast, id), defineSchema }
+  const ctx = { declared, refs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true }
 
   const s = new MagicString(code)
   const modules = []

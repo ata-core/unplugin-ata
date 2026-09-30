@@ -177,6 +177,10 @@ library build is 122.5 KB gzipped without it and 16.7 KB with it (gzip level 9),
 ata-validator 1.39.2. Across the 977 schemas of SchemaStore, 725 can be compiled
 away this way.
 
+Where the code only ever calls `isValidObject()` or `isValidJSON()`, the plugin
+uses a smaller wrapper without the error machinery (needs ata-validator 1.40.0):
+a small app that only asks for a boolean bundles to 2.1 KB gzipped.
+
 The replacement answers `validate()`, `isValidObject()`, `validateJSON()` and
 `isValidJSON()` as a `Validator` with default options does: the same verdicts,
 defaults filled in, `data` on success, and the same errors, enriched the same
@@ -197,7 +201,9 @@ otherwise:
   the runtime;
 - the result goes into a `const` that is not exported and is only used as
   `name.validate(...)`, `name.isValidObject(...)`, `name.validateJSON(...)` or
-  `name.isValidJSON(...)`;
+  `name.isValidJSON(...)`; the call may be wrapped in `withKeywords(...)` from
+  `@ata-project/keywords`, which then registers its keywords on the compiled
+  validator as it does on a `Validator` (needs ata-validator 1.40.0);
 - ata-validator can compile the schema to the same results. It declines custom
   `errorMessage`s and shapes its code generator cannot express, which the
   runtime answers with its interpreted engine.

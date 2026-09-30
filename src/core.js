@@ -70,6 +70,18 @@ async function loadAta() {
   if (canCompileAway) {
     try { compiledVerdict = typeof (await import('ata-validator/compiled-verdict')).fromCompiledVerdict === 'function' } catch { compiledVerdict = false }
   }
+  // Whether the wrappers take a check registered with _extendChecks, as
+  // withKeywords from @ata-project/keywords registers one; from 1.40.0. Asked
+  // of a wrapper itself, so an ata-validator without it keeps such calls on
+  // the runtime.
+  let compiledExtendChecks = false
+  if (canCompileAway) {
+    try {
+      const c = await import('ata-validator/compiled')
+      const fromCompiled = (c.default ?? c).fromCompiled ?? c.fromCompiled
+      compiledExtendChecks = typeof fromCompiled({ validate: () => ({ valid: true, errors: [] }), isValid: () => true }, {}, { useDefaults: false })._extendChecks === 'function'
+    } catch { compiledExtendChecks = false }
+  }
   return {
     ...api,
     toStandaloneModule: build.toStandaloneModule,
@@ -79,6 +91,7 @@ async function loadAta() {
     // 1.37.0; before it, only calls without options are replaced.
     compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
     compiledVerdict,
+    compiledExtendChecks,
   }
 }
 
