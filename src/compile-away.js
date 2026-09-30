@@ -29,6 +29,9 @@ import MagicString from 'magic-string'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
+// The builders of ata-validator/t that take only values. refine and
+// recursive take a function and stay on the runtime.
+const T_PURE = new Set(['string', 'number', 'integer', 'boolean', 'null', 'literal', 'const', 'enum', 'array', 'tuple', 'record', 'object', 'optional', 'union', 'intersect', 'ref', 'any', 'unknown', 'never', 'pick', 'omit', 'partial', 'required', 'composite'])
 
 // Keys that hold child nodes. Types are left out on purpose: they are erased
 // before anything runs, so a name used in a type annotation says nothing about
@@ -134,9 +137,30 @@ function staticValue(node, ctx, seen = new Set()) {
       seen.delete(node.name)
       return v
     }
-    case 'CallExpression':
+    case 'CallExpression': {
       if (node.callee.type === 'Identifier' && node.callee.name === ctx.defineSchema && node.arguments.length === 1) return staticValue(node.arguments[0], ctx, seen)
+      // `t.object(...)` and the rest of the builder from ata-validator/t. It
+      // returns plain JSON Schema and holds no state, so a call whose
+      // arguments the build can read gives here what it gives at run time.
+      // The builders that take a function are left out.
+      const c = node.callee
+      if (ctx.t && ctx.tName && c.type === 'MemberExpression' && !c.computed && c.object.type === 'Identifier' &&
+          c.object.name === ctx.tName && ctx.declared.get(ctx.tName) === 1 && c.property.type === 'Identifier' && T_PURE.has(c.property.name) &&
+          typeof ctx.t[c.property.name] === 'function') {
+        const args = []
+        for (const a of node.arguments) {
+          if (a.type === 'SpreadElement') return NOT_STATIC
+          const v = staticValue(a, ctx, seen)
+          if (v === NOT_STATIC) return NOT_STATIC
+          args.push(v)
+        }
+        let v
+        try { v = ctx.t[c.property.name](...args) } catch { return NOT_STATIC }
+        ctx.tCalls.add(node)
+        return v
+      }
       return NOT_STATIC
+    }
   }
   return NOT_STATIC
 }
@@ -244,6 +268,15 @@ export function compileAway(code, id, ata) {
     }
   }
   if (!validatorName) return null
+  let tName = null
+  for (const stmt of ast.program.body) {
+    if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== 'ata-validator/t' || stmt.importKind === 'type') continue
+    for (const sp of stmt.specifiers) {
+      if (sp.type !== 'ImportSpecifier' || sp.importKind === 'type') continue
+      const imported = sp.imported.type === 'Identifier' ? sp.imported.name : sp.imported.value
+      if (imported === 't') tName = sp.local.name
+    }
+  }
   let withKeywords = null
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== '@ata-project/keywords' || stmt.importKind === 'type') continue
@@ -256,7 +289,7 @@ export function compileAway(code, id, ata) {
 
   const { declared, refs } = scan(ast)
   if (declared.get(validatorName) !== 1) return null
-  const ctx = { declared, refs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true }
+  const ctx = { declared, refs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
   const modules = []
@@ -310,6 +343,10 @@ export function compileAway(code, id, ata) {
     const clause = [def ? text(def) : null, named.length ? `{ ${named.map(text).join(', ')} }` : null].filter(Boolean).join(', ')
     s.overwrite(importDecl.start, importDecl.end, `import ${clause} from ${code.slice(importDecl.source.start, importDecl.source.end)}`)
   }
+  // The builder calls read here are pure, and marked so: a schema constant
+  // only the replaced call used, and the builder with it, can then leave the
+  // bundle.
+  for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))

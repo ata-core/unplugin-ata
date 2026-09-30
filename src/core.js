@@ -74,6 +74,12 @@ async function loadAta() {
   // withKeywords from @ata-project/keywords registers one; from 1.40.0. Asked
   // of a wrapper itself, so an ata-validator without it keeps such calls on
   // the runtime.
+  // The ata-validator/t builder, run at build time on calls whose arguments
+  // the build can read.
+  let t = null
+  if (canCompileAway) {
+    try { const m = await import('ata-validator/t'); t = (m.default ?? m).t ?? m.t ?? null } catch { t = null }
+  }
   let compiledExtendChecks = false
   if (canCompileAway) {
     try {
@@ -92,6 +98,7 @@ async function loadAta() {
     compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
     compiledVerdict,
     compiledExtendChecks,
+    t,
   }
 }
 

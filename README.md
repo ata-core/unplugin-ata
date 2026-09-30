@@ -195,7 +195,11 @@ otherwise:
 - `Validator` is a named import from `ata-validator`;
 - the schema argument is an object literal, a top-level `const` bound to one,
   the default import of a relative `.json` file, or `defineSchema(...)` around
-  one of those;
+  one of those; calls to the `t` builder from `ata-validator/t` whose arguments are
+  such values are run at build time, since the builder returns plain JSON Schema,
+  and are marked pure so a schema only the replaced call used leaves the bundle
+  with the builder (`t.refine` and `t.recursive`, which take a function, stay on
+  the runtime);
 - there is no second argument, or it is `{ useDefaults: false }` (or
   `{ useDefaults: true }`), written as a literal or a top-level `const`; that
   one option needs ata-validator 1.37.0, and older versions keep such calls on
