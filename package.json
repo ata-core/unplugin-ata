@@ -1,6 +1,6 @@
 {
   "name": "@ata-project/unplugin",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Build-time JSON Schema for Vite, Webpack, Rollup, Rolldown, esbuild and Rspack. compileAway takes the runtime compiler out of the bundle.",
   "type": "module",
   "main": "./src/index.js",
@@ -79,7 +79,7 @@
   "devDependencies": {
     "@ata-project/keywords": "^0.3.3",
     "@rspack/core": "^1.7.0",
-    "ata-validator": "^1.39.2",
+    "ata-validator": "^1.40.0",
     "esbuild": "^0.28.0",
     "rolldown": "^1.2.8",
     "rollup": "^4.60.0",
