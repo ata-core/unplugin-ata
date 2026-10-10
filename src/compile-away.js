@@ -235,7 +235,7 @@ const verdictOnly = (methods) => [...methods].every((m) => VERDICT_METHODS.has(m
 // module compact, for an application with many schemas.
 const ERROR_RUNTIME = 'ata-validator/error-runtime'
 const ERROR_RUNTIME_COST = 24000
-const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors \} from [^\n]*\n/m
+const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors(?:, compileSafe as _ataCompileSafe)? \} from [^\n]*\n/m
 
 // The compact module when it is the smaller choice for `mode` ('auto' when not
 // set; true writes it wherever the schema allows, false never), else null.
@@ -324,6 +324,7 @@ export function compileAway(code, id, ata, options) {
   const done = new Set()
   const wrappers = { full: false, verdict: false }
   let usesRuntime = false
+  let usesSafeRe = false
   for (const r of refs) {
     if (r.node.name !== validatorName) continue
     const expr = r.parent
@@ -346,7 +347,7 @@ export function compileAway(code, id, ata, options) {
     // Code that never reads errors gets the verdict wrapper and no errors at
     // all, so a compact module would only add the runtime.
     const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors)
-    if (compact) { src = compact; usesRuntime = true }
+    if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
     modules.push(inlineModule(src, index, verdict))
     const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else wrappers.full = true
@@ -382,7 +383,9 @@ export function compileAway(code, id, ata, options) {
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
-  if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors } from '${ERROR_RUNTIME}';\n`)
+  // compileSafe is the pattern engine a compact module with a pattern the
+  // platform RegExp does not run takes from the runtime instead of embedding.
+  if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
   return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size }
 }

@@ -307,6 +307,23 @@ describe('compileAway shares one error runtime when a module pays for it', { ski
     assert.ok(out && !out.code.includes('error-runtime'), 'no runtime for the verdict wrapper')
   })
 
+  it('takes the pattern engine from the runtime instead of embedding it', async () => {
+    const esbuild = await import('esbuild')
+    const dir = await outDir('shared-re')
+    const schema = { type: 'object', properties: { a: { type: 'string', pattern: '^(a|ab)*c$' }, b: { type: 'string', pattern: '^([a-z]+-)*[a-z]+$' } }, required: ['a'] }
+    const src = path.join(dir, 'entry.mjs')
+    await fs.writeFile(src, head + `const v = new Validator(${JSON.stringify(schema)})\nexport const validate = (x) => v.validate(x)\n`)
+    const out = path.join(dir, 'out.mjs')
+    await esbuild.build({ entryPoints: [src], absWorkingDir: here, nodePaths: [path.join(here, '..', 'node_modules')], bundle: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', compileAway: true, sharedErrors: true })], logLevel: 'silent' })
+    const text = await fs.readFile(out, 'utf8')
+    assert.equal(text.split('function __ataSafeRegex').length - 1, 1, 'one copy of the pattern engine, the runtime\'s')
+    const mod = await import(pathToFileURL(out).href)
+    const runtime = new Validator(schema)
+    for (const d of [{ a: 'ababc' }, { a: 'abx' }, { a: 'c', b: 'x-y' }, { a: 'c', b: 'x--y' }, {}]) {
+      assert.equal(JSON.stringify(mod.validate(structuredClone(d))), JSON.stringify(runtime.validate(structuredClone(d))), JSON.stringify(d))
+    }
+  })
+
   it('a compact build answers as new Validator does, and is smaller', async () => {
     const esbuild = await import('esbuild')
     const dir = await outDir('shared')
