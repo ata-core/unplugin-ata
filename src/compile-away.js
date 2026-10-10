@@ -237,16 +237,36 @@ const ERROR_RUNTIME = 'ata-validator/error-runtime'
 const ERROR_RUNTIME_COST = 24000
 const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors(?:, compileSafe as _ataCompileSafe)? \} from [^\n]*\n/m
 
-// The compact module when it is the smaller choice for `mode` ('auto' when not
-// set; true writes it wherever the schema allows, false never), else null.
-function compactModuleFor(schema, full, ata, mode) {
+// The compact module when it is the choice for `mode`, else null:
+//   true      wherever the schema allows it
+//   'smaller' where it is smaller than the self-contained module (the build
+//             scan found that the application as a whole pays for the runtime)
+//   'auto'    where this module alone pays for the runtime
+//   false     never
+// With `collect`, nothing is chosen: the saving is recorded for the scan.
+function compactModuleFor(schema, full, ata, mode, collect) {
   if (mode === false || !ata.compiledSharedErrors) return null
   let src = null
   try { src = ata.compiledModuleFor(schema, { format: 'esm', errorRuntime: ERROR_RUNTIME }) } catch { src = null }
   if (!src || !RUNTIME_IMPORT.test(src)) return null
   if (mode === true) return src
   const saving = zlib.gzipSync(full).length - zlib.gzipSync(src).length
+  if (collect) { collect.push(saving); return null }
+  if (mode === 'smaller') return saving > 0 ? src : null
   return saving > ERROR_RUNTIME_COST ? src : null
+}
+
+// Whether an application pays for the shared runtime: the saving of every
+// replaceable call in its sources, against the runtime's cost. `sources` is a
+// list of [code, id]. A call the transform would not replace adds nothing.
+export function sharedErrorsPay(sources, ata) {
+  const collect = []
+  for (const [code, id] of sources) {
+    try { compileAway(code, id, ata, { sharedErrors: 'auto', collect }) } catch {}
+  }
+  let saving = 0
+  for (const x of collect) if (x > 0) saving += x
+  return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 
 function inlineModule(src, index, verdict) {
@@ -271,6 +291,7 @@ function compiledOptionsArg(node, ctx, supported) {
 
 export function compileAway(code, id, ata, options) {
   const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
+  const collect = options && Array.isArray(options.collect) ? options.collect : null
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator')) return null
@@ -346,7 +367,7 @@ export function compileAway(code, id, ata, options) {
     const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
     // Code that never reads errors gets the verdict wrapper and no errors at
     // all, so a compact module would only add the runtime.
-    const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors)
+    const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
     if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
     modules.push(inlineModule(src, index, verdict))
     const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'

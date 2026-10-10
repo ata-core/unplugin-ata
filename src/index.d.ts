@@ -32,10 +32,11 @@ export interface Options {
   compileAway?: boolean
   /**
    * Where a replaced validator's error detail comes from. `'auto'` (default)
-   * writes a module compact (its verdict and its schema, with errors from
-   * `ata-validator/error-runtime`, held once by the bundle) when that module
-   * alone saves more than the runtime adds; `true` writes every module that
-   * can be compact, for an application with many schemas; `false` never.
+   * scans the project's sources at build start and writes modules compact
+   * (their verdict and schema, with errors from `ata-validator/error-runtime`,
+   * held once by the bundle) when all of them together save more than the
+   * runtime adds; `true` writes every module that can be compact; `false`
+   * never.
    * Needs ata-validator 1.50.0.
    */
   sharedErrors?: 'auto' | boolean
