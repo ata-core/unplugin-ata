@@ -263,8 +263,10 @@ function compactModuleFor(schema, full, ata, mode, collect) {
   try { src = ata.compiledModuleFor(schema, { format: 'esm', errorRuntime: ERROR_RUNTIME }) } catch { src = null }
   if (!src || !RUNTIME_IMPORT.test(src)) return null
   if (mode === true) return src
+  // The scan collects the pairs and weighs them all at once, in parallel
+  // (sharedErrorsPay); the transform finds the sizes cached.
+  if (collect) { collect.push([full, src]); return null }
   const saving = gzipSize(full) - gzipSize(src)
-  if (collect) { collect.push(saving); return null }
   if (mode === 'smaller') return saving > 0 ? src : null
   return saving > ERROR_RUNTIME_COST ? src : null
 }
@@ -272,13 +274,28 @@ function compactModuleFor(schema, full, ata, mode, collect) {
 // Whether an application pays for the shared runtime: the saving of every
 // replaceable call in its sources, against the runtime's cost. `sources` is a
 // list of [code, id]. A call the transform would not replace adds nothing.
-export function sharedErrorsPay(sources, ata) {
+// Gzipping a module of a hundred kilobytes is the scan's largest cost; the
+// asynchronous zlib runs on libuv's thread pool, so the modules of a build
+// are weighed in parallel rather than one after the other.
+function gzipSizeAsync(src) {
+  const n = sizes.get(src)
+  if (n !== undefined) return Promise.resolve(n)
+  return new Promise((resolve, reject) => zlib.gzip(src, (err, out) => {
+    if (err) { reject(err); return }
+    if (sizes.size > 4096) sizes.clear()
+    sizes.set(src, out.length)
+    resolve(out.length)
+  }))
+}
+
+export async function sharedErrorsPay(sources, ata) {
   const collect = []
   for (const [code, id] of sources) {
     try { compileAway(code, id, ata, { sharedErrors: 'auto', collect }) } catch {}
   }
+  const savings = await Promise.all(collect.map(async ([full, compact]) => (await gzipSizeAsync(full)) - (await gzipSizeAsync(compact))))
   let saving = 0
-  for (const x of collect) if (x > 0) saving += x
+  for (const x of savings) if (x > 0) saving += x
   return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 

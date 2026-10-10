@@ -76,7 +76,7 @@ export const unpluginFactory = (userOptions = {}) => {
         if (api.compiledModuleFor && api.compiledSharedErrors) {
           const sources = scanSources(session.root || process.cwd())
           session.scanned = new Set(sources.map(([, id]) => path.resolve(id)))
-          const { pays, saving, calls } = sharedErrorsPay(sources, cachedApi(session, api))
+          const { pays, saving, calls } = await sharedErrorsPay(sources, cachedApi(session, api))
           // When the whole application does not pay for the runtime, no single
           // call does either: the transform skips the compact attempt. A file
           // the scan did not see (outside the root) decides alone, by the
