@@ -11,7 +11,7 @@ import path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { createSession, normalizeAlias, compile, __internal } from './core.js'
 import fs from 'node:fs'
-import { compileAway, sharedErrorsPay } from './compile-away.js'
+import { compileAway, sharedErrorsPay, clearSizes } from './compile-away.js'
 
 const SOURCE = /\.[cm]?[jt]sx?$/
 
@@ -69,6 +69,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // file: the sources are scanned once here, and the runtime is used when
       // every replaceable call together saves more than it costs.
       session.sharedDecision = undefined
+      clearSizes()
       session.scanned = null
       if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
         const api = await session.api()

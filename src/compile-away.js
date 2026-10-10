@@ -237,6 +237,19 @@ const ERROR_RUNTIME = 'ata-validator/error-runtime'
 const ERROR_RUNTIME_COST = 24000
 const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors(?:, compileSafe as _ataCompileSafe)? \} from [^\n]*\n/m
 
+// The scan and the transform weigh the same modules, and the module sources
+// come back as the same strings from the session's compile cache: each is
+// gzipped once per build (clearSizes runs at build start).
+const sizes = new Map()
+// The scan parses every source the transform parses again: once per build.
+const asts = new Map()
+function gzipSize(src) {
+  let n = sizes.get(src)
+  if (n === undefined) { n = zlib.gzipSync(src).length; if (sizes.size > 4096) sizes.clear(); sizes.set(src, n) }
+  return n
+}
+export function clearSizes() { sizes.clear(); asts.clear() }
+
 // The compact module when it is the choice for `mode`, else null:
 //   true      wherever the schema allows it
 //   'smaller' where it is smaller than the self-contained module (the build
@@ -250,7 +263,7 @@ function compactModuleFor(schema, full, ata, mode, collect) {
   try { src = ata.compiledModuleFor(schema, { format: 'esm', errorRuntime: ERROR_RUNTIME }) } catch { src = null }
   if (!src || !RUNTIME_IMPORT.test(src)) return null
   if (mode === true) return src
-  const saving = zlib.gzipSync(full).length - zlib.gzipSync(src).length
+  const saving = gzipSize(full) - gzipSize(src)
   if (collect) { collect.push(saving); return null }
   if (mode === 'smaller') return saving > 0 ? src : null
   return saving > ERROR_RUNTIME_COST ? src : null
@@ -295,12 +308,20 @@ export function compileAway(code, id, ata, options) {
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator')) return null
-  let ast
-  try {
-    ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false })
-  } catch {
-    return null
+  // The scan keeps the tree it parsed for the transform, which takes it and
+  // lets it go, so a long dev session holds no old versions of a file.
+  let ast = asts.get(code)
+  if (ast !== undefined) {
+    if (!collect) asts.delete(code)
+  } else {
+    try {
+      ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false })
+    } catch {
+      ast = null
+    }
+    if (collect) asts.set(code, ast)
   }
+  if (ast === null) return null
   let validatorName = null
   let importDecl = null
   let defineSchema = null
