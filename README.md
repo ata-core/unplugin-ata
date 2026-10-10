@@ -151,6 +151,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context` and esbuild's `absWorkingDir` are read; Rollup and Rolldown need it passed. |
 | `alias` | Vite's `resolve.alias` | Import aliases inside `.ts` schema files. tsconfig `paths` work without configuration. |
 | `compileAway` | `true` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.36.0; with an older version the runtime stays, and a warning is printed only if you set the option yourself. |
+| `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` writes a module compact only when it alone saves more than the runtime adds (in practice a schema of several hundred properties), `true` does it for every schema that allows it, which pays off when an application has many, and `false` never. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0. |
 
 ## compileAway: keep `new Validator`, drop the compiler
 

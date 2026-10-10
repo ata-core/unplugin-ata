@@ -30,6 +30,15 @@ export interface Options {
    * Default: `true`; `false` turns it off.
    */
   compileAway?: boolean
+  /**
+   * Where a replaced validator's error detail comes from. `'auto'` (default)
+   * writes a module compact (its verdict and its schema, with errors from
+   * `ata-validator/error-runtime`, held once by the bundle) when that module
+   * alone saves more than the runtime adds; `true` writes every module that
+   * can be compact, for an application with many schemas; `false` never.
+   * Needs ata-validator 1.50.0.
+   */
+  sharedErrors?: 'auto' | boolean
 }
 
 export interface CompileResult {

@@ -24,6 +24,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
 
@@ -222,8 +223,34 @@ const verdictOnly = (methods) => [...methods].every((m) => VERDICT_METHODS.has(m
 
 // A verdict-only module hands out isValid alone, so the error function inside
 // it is unreferenced and the bundler drops it.
+// A compact module takes its errors from this runtime, which a bundle holds
+// once. A module is written compact only when it alone saves more than the
+// runtime adds, so the choice never makes a bundle bigger, whatever else the
+// bundle holds and in whatever order files are transformed. The bar is the
+// module's gzipped saving as this transform sees it (unminified source), and
+// it was set from minified esbuild bundles of one schema each: the runtime
+// paid for itself from about 22000 bytes of that saving (a 300-property
+// schema lost 1826 bytes at 19430, a 400-property one gained 1937 at 25127).
+// Below it, a schema stays self-contained; `sharedErrors: true` writes every
+// module compact, for an application with many schemas.
+const ERROR_RUNTIME = 'ata-validator/error-runtime'
+const ERROR_RUNTIME_COST = 24000
+const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors \} from [^\n]*\n/m
+
+// The compact module when it is the smaller choice for `mode` ('auto' when not
+// set; true writes it wherever the schema allows, false never), else null.
+function compactModuleFor(schema, full, ata, mode) {
+  if (mode === false || !ata.compiledSharedErrors) return null
+  let src = null
+  try { src = ata.compiledModuleFor(schema, { format: 'esm', errorRuntime: ERROR_RUNTIME }) } catch { src = null }
+  if (!src || !RUNTIME_IMPORT.test(src)) return null
+  if (mode === true) return src
+  const saving = zlib.gzipSync(full).length - zlib.gzipSync(src).length
+  return saving > ERROR_RUNTIME_COST ? src : null
+}
+
 function inlineModule(src, index, verdict) {
-  const body = src.split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
+  const body = src.replace(RUNTIME_IMPORT, '').split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
   return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${verdict ? '{ isValid }' : '{ validate, isValid }'};\n})();\n`
 }
 
@@ -242,7 +269,8 @@ function compiledOptionsArg(node, ctx, supported) {
   return opts.useDefaults === false ? '{"useDefaults":false}' : ''
 }
 
-export function compileAway(code, id, ata) {
+export function compileAway(code, id, ata, options) {
+  const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator')) return null
@@ -295,6 +323,7 @@ export function compileAway(code, id, ata) {
   const modules = []
   const done = new Set()
   const wrappers = { full: false, verdict: false }
+  let usesRuntime = false
   for (const r of refs) {
     if (r.node.name !== validatorName) continue
     const expr = r.parent
@@ -314,6 +343,10 @@ export function compileAway(code, id, ata) {
     if (!src) continue
     const index = modules.length
     const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
+    // Code that never reads errors gets the verdict wrapper and no errors at
+    // all, so a compact module would only add the runtime.
+    const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors)
+    if (compact) { src = compact; usesRuntime = true }
     modules.push(inlineModule(src, index, verdict))
     const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else wrappers.full = true
@@ -349,6 +382,7 @@ export function compileAway(code, id, ata) {
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
+  if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors } from '${ERROR_RUNTIME}';\n`)
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
   return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size }
 }

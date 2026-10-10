@@ -55,7 +55,7 @@ export const unpluginFactory = (userOptions = {}) => {
         }
         return null
       }
-      const out = compileAway(code, id.split('?')[0], api)
+      const out = compileAway(code, id.split('?')[0], api, { sharedErrors: userOptions.sharedErrors })
       return out ? { code: out.code, map: out.map } : null
     },
 

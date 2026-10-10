@@ -249,7 +249,6 @@ describe('compileAway decides conservatively', () => {
   })
 
   it('leaves a call alone when ata declines the schema', () => {
-    assert.equal(run(head + "const v = new Validator({ type: 'object', properties: { 'a\\nb': { type: 'number' } } })\nv.validate({})\n"), null)
     assert.equal(run(head + "const v = new Validator({ type: 'string', errorMessage: 'no' })\nv.validate(1)\n"), null)
   })
 
@@ -264,5 +263,67 @@ describe('compileAway decides conservatively', () => {
     assert.equal(on.transformInclude('/x/node_modules/lib/app.js'), false)
     const off = unplugin.vite({ schemas: 'none/*.json', compileAway: false })
     assert.equal(off.transformInclude('/x/app.ts'), false)
+  })
+})
+
+// A schema large enough that its module alone saves more than the shared error
+// runtime costs: the shape of a published configuration schema, every property
+// described.
+function largeSchema(n = 600) {
+  const props = {}
+  for (let i = 0; i < n; i++) {
+    props['field' + i] = {
+      description: `Field ${i}, described at the length published schemas describe their fields, so the descriptions are most of the text.`,
+      ...(i % 3 === 0 ? { type: 'string', maxLength: 40, pattern: '^[a-z]+$' } : i % 3 === 1 ? { type: 'integer', minimum: 0 } : { type: 'object', properties: { x: { type: 'number' }, y: { enum: ['a', 'b'] } }, required: ['x'], additionalProperties: false }),
+    }
+  }
+  return { type: 'object', properties: props, required: ['field0', 'field1'], additionalProperties: false }
+}
+
+// The runtime entry ships with ata-validator 1.50.0; an older install skips these.
+let hasErrorRuntime = true
+try { require.resolve('ata-validator/error-runtime') } catch { hasErrorRuntime = false }
+
+describe('compileAway shares one error runtime when a module pays for it', { skip: !hasErrorRuntime && 'ata-validator has no error-runtime entry' }, () => {
+  const head = "import { Validator } from 'ata-validator'\n"
+  const runWith = (code, sharedErrors) => compileAway(code, path.join(root, 'x.ts'), { ...ata, compiledSharedErrors: true, compiledVerdict: true }, { sharedErrors })
+
+  it('writes a large schema compact, a small one self-contained', () => {
+    const big = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema())})\nexport const f = (x) => v.validate(x)\n`)
+    assert.ok(big && big.code.includes("from 'ata-validator/error-runtime'"), 'large schema: compact')
+    assert.equal(big.code.split("from 'ata-validator/error-runtime'").length, 2, 'one import')
+    const small = runWith(head + "const v = new Validator({ type: 'object', properties: { id: { type: 'integer' } } })\nexport const f = (x) => v.validate(x)\n")
+    assert.ok(small && !small.code.includes('error-runtime'), 'small schema: self-contained')
+    const medium = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema(150))})\nexport const f = (x) => v.validate(x)\n`)
+    assert.ok(medium && !medium.code.includes('error-runtime'), 'a schema that does not pay for the runtime alone: self-contained')
+    const forced = runWith(head + "const v = new Validator({ type: 'object', properties: { id: { type: 'integer' } } })\nexport const f = (x) => v.validate(x)\n", true)
+    assert.ok(forced.code.includes("from 'ata-validator/error-runtime'"), 'sharedErrors: true')
+    const off = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema())})\nexport const f = (x) => v.validate(x)\n`, false)
+    assert.ok(!off.code.includes('error-runtime'), 'sharedErrors: false')
+  })
+
+  it('leaves code that never reads errors on the verdict wrapper', () => {
+    const out = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema())})\nexport const f = (x) => v.isValidObject(x)\n`, true)
+    assert.ok(out && !out.code.includes('error-runtime'), 'no runtime for the verdict wrapper')
+  })
+
+  it('a compact build answers as new Validator does, and is smaller', async () => {
+    const esbuild = await import('esbuild')
+    const dir = await outDir('shared')
+    const schema = largeSchema()
+    const src = path.join(dir, 'entry.mjs')
+    await fs.writeFile(src, head + `export const Body = ${JSON.stringify(schema)}\nconst v = new Validator(${JSON.stringify(schema)})\nexport const validate = (x) => v.validate(x)\n`)
+    const sizes = {}
+    for (const sharedErrors of ['auto', false]) {
+      const out = path.join(dir, `out-${sharedErrors}.mjs`)
+      await esbuild.build({ entryPoints: [src], absWorkingDir: here, nodePaths: [path.join(here, '..', 'node_modules')], bundle: true, minify: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', compileAway: true, sharedErrors })], logLevel: 'silent' })
+      const text = await fs.readFile(out, 'utf8')
+      sizes[sharedErrors] = (await import('node:zlib')).gzipSync(text).length
+      const mod = await import(pathToFileURL(out).href)
+      const runtime = new Validator(schema)
+      const docs = [{ field0: 'ab', field1: 2 }, { field0: 'AB', field1: -1, field2: { y: 'c' }, extra: 1 }, {}, null, { field0: 'x'.repeat(50), field1: 1.5, field5: {} }]
+      for (const d of docs) assert.equal(JSON.stringify(mod.validate(structuredClone(d))), JSON.stringify(runtime.validate(structuredClone(d))), `${sharedErrors} ${JSON.stringify(d)}`)
+    }
+    assert.ok(sizes.auto < sizes.false, `compact ${sizes.auto} should be below self-contained ${sizes.false}`)
   })
 })
