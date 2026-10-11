@@ -88,8 +88,16 @@ async function loadAta() {
       compiledExtendChecks = typeof fromCompiled({ validate: () => ({ valid: true, errors: [] }), isValid: () => true }, {}, { useDefaults: false })._extendChecks === 'function'
     } catch { compiledExtendChecks = false }
   }
+  // Compact modules, from ata-validator 1.50.0: the verdict and the schema,
+  // with errors from ata-validator/error-runtime, which the bundle then holds
+  // once for every compact module in it.
+  let compiledSharedErrors = false
+  if (canCompileAway) {
+    try { compiledSharedErrors = typeof (await import('ata-validator/error-runtime')).createErrors === 'function' } catch { compiledSharedErrors = false }
+  }
   return {
     ...api,
+    compiledSharedErrors,
     toStandaloneModule: build.toStandaloneModule,
     compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,
     compiledSchemaFor: canCompileAway ? build.compiledSchemaFor : null,

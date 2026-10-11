@@ -10,9 +10,49 @@
 import path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { createSession, normalizeAlias, compile, __internal } from './core.js'
-import { compileAway } from './compile-away.js'
+import fs from 'node:fs'
+import { compileAway, sharedErrorsPay, clearSizes } from './compile-away.js'
 
 const SOURCE = /\.[cm]?[jt]sx?$/
+
+// Source files the application may import, for the sharedErrors scan: what
+// the transform would see, without node_modules, build output, tests and
+// dot-directories. Only files that mention ata-validator are kept.
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.next', '.nuxt', '.output', '.svelte-kit', '.turbo', '.cache'])
+const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/
+function scanSources(root) {
+  const out = []
+  const walk = (dir, depth) => {
+    if (depth > 12) return
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'test' && e.name !== 'tests') walk(p, depth + 1); continue }
+      if (!e.isFile() || !SOURCE.test(e.name) || TEST_FILE.test(e.name)) continue
+      let code
+      try { if (fs.statSync(p).size > 1 << 20) continue; code = fs.readFileSync(p, 'utf8') } catch { continue }
+      if (code.includes('ata-validator')) out.push([code, p])
+    }
+  }
+  walk(root, 0)
+  return out
+}
+
+// The scan and the transform compile the same schemas: one compile each.
+function cachedApi(session, api) {
+  if (session.cachedApi && session.cachedApiFor === api) return session.cachedApi
+  const memo = new Map()
+  const compiledModuleFor = (schema, opts) => {
+    const key = JSON.stringify(schema) + '\u0000' + JSON.stringify(opts || {})
+    if (!memo.has(key)) memo.set(key, api.compiledModuleFor(schema, opts))
+    return memo.get(key)
+  }
+  session.cachedApi = { ...api, compiledModuleFor }
+  session.cachedApiFor = api
+  return session.cachedApi
+}
 
 export const unpluginFactory = (userOptions = {}) => {
   const session = createSession(userOptions)
@@ -25,6 +65,26 @@ export const unpluginFactory = (userOptions = {}) => {
       const { files, results } = await session.compileAll()
       const changed = results.filter((r) => r.changed).length
       session.logger?.info?.(`[unplugin-ata] compiled ${files.length} schema(s), ${changed} file(s) written`)
+      // sharedErrors 'auto' decides for the whole application, not file by
+      // file: the sources are scanned once here, and the runtime is used when
+      // every replaceable call together saves more than it costs.
+      session.sharedDecision = undefined
+      clearSizes()
+      session.scanned = null
+      if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
+        const api = await session.api()
+        if (api.compiledModuleFor && api.compiledSharedErrors) {
+          const sources = scanSources(session.root || process.cwd())
+          session.scanned = new Set(sources.map(([, id]) => path.resolve(id)))
+          const { pays, saving, calls } = await sharedErrorsPay(sources, cachedApi(session, api))
+          // When the whole application does not pay for the runtime, no single
+          // call does either: the transform skips the compact attempt. A file
+          // the scan did not see (outside the root) decides alone, by the
+          // per-module rule, which never makes a bundle bigger either.
+          session.sharedDecision = pays ? 'smaller' : false
+          if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) can share one error runtime, saving ${saving} bytes gzipped against its cost: ${pays ? 'shared' : 'kept self-contained'}`)
+        }
+      }
     },
 
     async watchChange(id) {
@@ -55,7 +115,9 @@ export const unpluginFactory = (userOptions = {}) => {
         }
         return null
       }
-      const out = compileAway(code, id.split('?')[0], api)
+      const file = id.split('?')[0]
+      const scanned = session.sharedDecision !== undefined && session.scanned && session.scanned.has(path.resolve(file))
+      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors })
       return out ? { code: out.code, map: out.map } : null
     },
 

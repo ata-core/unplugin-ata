@@ -24,6 +24,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
 
@@ -222,8 +223,84 @@ const verdictOnly = (methods) => [...methods].every((m) => VERDICT_METHODS.has(m
 
 // A verdict-only module hands out isValid alone, so the error function inside
 // it is unreferenced and the bundler drops it.
+// A compact module takes its errors from this runtime, which a bundle holds
+// once. A module is written compact only when it alone saves more than the
+// runtime adds, so the choice never makes a bundle bigger, whatever else the
+// bundle holds and in whatever order files are transformed. The bar is the
+// module's gzipped saving as this transform sees it (unminified source), and
+// it was set from minified esbuild bundles of one schema each: the runtime
+// paid for itself from about 22000 bytes of that saving (a 300-property
+// schema lost 1826 bytes at 19430, a 400-property one gained 1937 at 25127).
+// Below it, a schema stays self-contained; `sharedErrors: true` writes every
+// module compact, for an application with many schemas.
+const ERROR_RUNTIME = 'ata-validator/error-runtime'
+const ERROR_RUNTIME_COST = 24000
+const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors(?:, compileSafe as _ataCompileSafe)? \} from [^\n]*\n/m
+
+// The scan and the transform weigh the same modules, and the module sources
+// come back as the same strings from the session's compile cache: each is
+// gzipped once per build (clearSizes runs at build start).
+const sizes = new Map()
+// The scan parses every source the transform parses again: once per build.
+const asts = new Map()
+function gzipSize(src) {
+  let n = sizes.get(src)
+  if (n === undefined) { n = zlib.gzipSync(src).length; if (sizes.size > 4096) sizes.clear(); sizes.set(src, n) }
+  return n
+}
+export function clearSizes() { sizes.clear(); asts.clear() }
+
+// The compact module when it is the choice for `mode`, else null:
+//   true      wherever the schema allows it
+//   'smaller' where it is smaller than the self-contained module (the build
+//             scan found that the application as a whole pays for the runtime)
+//   'auto'    where this module alone pays for the runtime
+//   false     never
+// With `collect`, nothing is chosen: the saving is recorded for the scan.
+function compactModuleFor(schema, full, ata, mode, collect) {
+  if (mode === false || !ata.compiledSharedErrors) return null
+  let src = null
+  try { src = ata.compiledModuleFor(schema, { format: 'esm', errorRuntime: ERROR_RUNTIME }) } catch { src = null }
+  if (!src || !RUNTIME_IMPORT.test(src)) return null
+  if (mode === true) return src
+  // The scan collects the pairs and weighs them all at once, in parallel
+  // (sharedErrorsPay); the transform finds the sizes cached.
+  if (collect) { collect.push([full, src]); return null }
+  const saving = gzipSize(full) - gzipSize(src)
+  if (mode === 'smaller') return saving > 0 ? src : null
+  return saving > ERROR_RUNTIME_COST ? src : null
+}
+
+// Whether an application pays for the shared runtime: the saving of every
+// replaceable call in its sources, against the runtime's cost. `sources` is a
+// list of [code, id]. A call the transform would not replace adds nothing.
+// Gzipping a module of a hundred kilobytes is the scan's largest cost; the
+// asynchronous zlib runs on libuv's thread pool, so the modules of a build
+// are weighed in parallel rather than one after the other.
+function gzipSizeAsync(src) {
+  const n = sizes.get(src)
+  if (n !== undefined) return Promise.resolve(n)
+  return new Promise((resolve, reject) => zlib.gzip(src, (err, out) => {
+    if (err) { reject(err); return }
+    if (sizes.size > 4096) sizes.clear()
+    sizes.set(src, out.length)
+    resolve(out.length)
+  }))
+}
+
+export async function sharedErrorsPay(sources, ata) {
+  const collect = []
+  for (const [code, id] of sources) {
+    try { compileAway(code, id, ata, { sharedErrors: 'auto', collect }) } catch {}
+  }
+  const savings = await Promise.all(collect.map(async ([full, compact]) => (await gzipSizeAsync(full)) - (await gzipSizeAsync(compact))))
+  let saving = 0
+  for (const x of savings) if (x > 0) saving += x
+  return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
+}
+
 function inlineModule(src, index, verdict) {
-  const body = src.split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
+  const body = src.replace(RUNTIME_IMPORT, '').split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
   return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${verdict ? '{ isValid }' : '{ validate, isValid }'};\n})();\n`
 }
 
@@ -242,16 +319,26 @@ function compiledOptionsArg(node, ctx, supported) {
   return opts.useDefaults === false ? '{"useDefaults":false}' : ''
 }
 
-export function compileAway(code, id, ata) {
+export function compileAway(code, id, ata, options) {
+  const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
+  const collect = options && Array.isArray(options.collect) ? options.collect : null
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator')) return null
-  let ast
-  try {
-    ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false })
-  } catch {
-    return null
+  // The scan keeps the tree it parsed for the transform, which takes it and
+  // lets it go, so a long dev session holds no old versions of a file.
+  let ast = asts.get(code)
+  if (ast !== undefined) {
+    if (!collect) asts.delete(code)
+  } else {
+    try {
+      ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false })
+    } catch {
+      ast = null
+    }
+    if (collect) asts.set(code, ast)
   }
+  if (ast === null) return null
   let validatorName = null
   let importDecl = null
   let defineSchema = null
@@ -295,6 +382,8 @@ export function compileAway(code, id, ata) {
   const modules = []
   const done = new Set()
   const wrappers = { full: false, verdict: false }
+  let usesRuntime = false
+  let usesSafeRe = false
   for (const r of refs) {
     if (r.node.name !== validatorName) continue
     const expr = r.parent
@@ -314,6 +403,10 @@ export function compileAway(code, id, ata) {
     if (!src) continue
     const index = modules.length
     const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
+    // Code that never reads errors gets the verdict wrapper and no errors at
+    // all, so a compact module would only add the runtime.
+    const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
+    if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
     modules.push(inlineModule(src, index, verdict))
     const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else wrappers.full = true
@@ -349,6 +442,9 @@ export function compileAway(code, id, ata) {
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
+  // compileSafe is the pattern engine a compact module with a pattern the
+  // platform RegExp does not run takes from the runtime instead of embedding.
+  if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
   return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size }
 }
