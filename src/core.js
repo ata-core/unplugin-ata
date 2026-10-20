@@ -14,6 +14,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 
 function pascal(str) {
   const cleaned = String(str)
@@ -95,8 +97,30 @@ async function loadAta() {
   if (canCompileAway) {
     try { compiledSharedErrors = typeof (await import('ata-validator/error-runtime')).createErrors === 'function' } catch { compiledSharedErrors = false }
   }
+  // Modules in the runtime's error order, from ata-validator 1.57.0: what
+  // ataCompiledResolver needs, since it hands the module's errors to the form
+  // as they come.
+  let compiledOrder = false
+  if (canCompileAway) {
+    try { compiledOrder = (build.compiledModuleFor({ type: 'object', properties: { a: { type: 'string' } } }, { format: 'esm', order: true }) || '').includes('function _ataOrder(') } catch { compiledOrder = false }
+  }
+  // Whether the @hookform/resolvers a file imports has ataCompiledResolver,
+  // asked of the copy that file resolves to, once per copy.
+  const resolverCopies = new Map()
+  const compiledResolver = (file) => {
+    if (!compiledOrder) return false
+    let target
+    try { target = createRequire(file).resolve('@hookform/resolvers/ata-validator') } catch { return false }
+    let has = resolverCopies.get(target)
+    if (has === undefined) {
+      try { has = readFileSync(target, 'utf8').includes('ataCompiledResolver') } catch { has = false }
+      resolverCopies.set(target, has)
+    }
+    return has
+  }
   return {
     ...api,
+    compiledResolver,
     compiledSharedErrors,
     toStandaloneModule: build.toStandaloneModule,
     compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,

@@ -214,6 +214,33 @@ otherwise:
   `errorMessage`s and shapes its code generator cannot express, which the
   runtime answers with its interpreted engine.
 
+### react-hook-form: `ataResolver(schema)`
+
+`ataResolver(schema)` from `@hookform/resolvers/ata-validator` is compiled away
+the same way: the plugin writes `ataCompiledResolver(module)` in its place, and
+the runtime leaves the bundle. A form written the usual way,
+
+```tsx
+import { useForm } from 'react-hook-form'
+import { ataResolver } from '@hookform/resolvers/ata-validator'
+import schema from './signup.json'
+
+const form = useForm({ resolver: ataResolver(schema) })
+```
+
+adds 4.1 KB gzipped to react-hook-form for an eight-field signup form, against
+135.4 KB without the plugin, in a minified esbuild build without code
+splitting (ata-validator 1.57.0). The module fills defaults with its
+`applyDefaults` and returns its errors in the runtime's order, so the
+resolver's answer, values and field errors, is the one `ataResolver` gives.
+
+The schema is read as above, and the call is replaced only when it passes no
+validator options (or `undefined` or `{}` for them, with a literal
+`{ raw: true }` or `{ raw: false }` for the resolver's own options), when the
+installed `@hookform/resolvers` exports `ataCompiledResolver`, and when
+ata-validator writes modules in the runtime's error order (1.57.0). Options
+such as `coerceTypes` have no compiled form and keep the runtime.
+
 Any other option (`new Validator(schema, { coerceTypes: true })`), a schema
 built at run time, or an instance passed around stays as written.
 

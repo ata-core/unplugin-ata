@@ -21,6 +21,19 @@
 //     it fills defaults and orders errors the same way.
 // The compiled module is inlined as a function scope next to the imports; it
 // imports nothing, so no virtual module or extra file is involved.
+//
+// `ataResolver(schema)` from @hookform/resolvers/ata-validator becomes
+// `ataCompiledResolver(module)` the same way, where the installed resolvers
+// have it and ata-validator writes modules in the runtime's error order:
+//   - the schema is a value the build can read, as above, and the call passes
+//     no validator options (nothing reproduces coerceTypes or the like in a
+//     module), or passes `undefined` or `{}` for them and a literal
+//     `{ raw: <boolean> }` for the resolver's own options;
+//   - compiledModuleFor() returns a module for the schema, written with
+//     `order: true`, so its errors come in the runtime's order, and it exports
+//     applyDefaults where the schema has a default, which the compiled resolver
+//     calls first, as the runtime fills defaults. The resolver then answers as
+//     ataResolver does; the resolvers' own tests hold the two to each other.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -299,9 +312,30 @@ export async function sharedErrorsPay(sources, ata) {
   return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 
-function inlineModule(src, index, verdict) {
+function inlineModule(src, index, verdict, names) {
   const body = src.replace(RUNTIME_IMPORT, '').split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
-  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${verdict ? '{ isValid }' : '{ validate, isValid }'};\n})();\n`
+  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${names || (verdict ? '{ isValid }' : '{ validate, isValid }')};\n})();\n`
+}
+
+const RESOLVERS = '@hookform/resolvers/ata-validator'
+
+// The resolver's options as source for ataCompiledResolver's second argument:
+// '' for none, the literal's text for `{ raw: <boolean> }`, NOT_STATIC for
+// anything else, which keeps the call on the runtime.
+function resolverOptionsArg(args, code, ctx) {
+  if (args.length === 1) return ''
+  const isUndefined = (n) => n.type === 'Identifier' && n.name === 'undefined' && !ctx.declared.has('undefined')
+  const schemaOptions = args[1]
+  if (!isUndefined(schemaOptions)) {
+    const v = staticValue(schemaOptions, ctx)
+    if (v === NOT_STATIC || v === null || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).length !== 0) return NOT_STATIC
+  }
+  if (args.length === 2) return ''
+  if (args.length !== 3 || isUndefined(args[2])) return args.length === 3 ? '' : NOT_STATIC
+  const v = staticValue(args[2], ctx)
+  if (v === NOT_STATIC || v === null || typeof v !== 'object' || Array.isArray(v)) return NOT_STATIC
+  for (const [k, x] of Object.entries(v)) if (k !== 'raw' || typeof x !== 'boolean') return NOT_STATIC
+  return ', ' + JSON.stringify(v)
 }
 
 // The options of `new Validator(schema, options)` as a third argument for
@@ -354,7 +388,19 @@ export function compileAway(code, id, ata, options) {
       if (imported === 'defineSchema') defineSchema = s.local.name
     }
   }
-  if (!validatorName) return null
+  let resolverName = null
+  let resolverImport = null
+  if (ata.compiledResolver && ata.compiledResolver(id)) {
+    for (const stmt of ast.program.body) {
+      if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== RESOLVERS || stmt.importKind === 'type') continue
+      for (const sp of stmt.specifiers) {
+        if (sp.type !== 'ImportSpecifier' || sp.importKind === 'type') continue
+        const imported = sp.imported.type === 'Identifier' ? sp.imported.name : sp.imported.value
+        if (imported === 'ataResolver') { resolverName = sp.local.name; resolverImport = stmt }
+      }
+    }
+  }
+  if (!validatorName && !resolverName) return null
   let tName = null
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== 'ata-validator/t' || stmt.importKind === 'type') continue
@@ -375,7 +421,9 @@ export function compileAway(code, id, ata, options) {
   }
 
   const { declared, refs } = scan(ast)
-  if (declared.get(validatorName) !== 1) return null
+  if (validatorName && declared.get(validatorName) !== 1) validatorName = null
+  if (resolverName && declared.get(resolverName) !== 1) resolverName = null
+  if (!validatorName && !resolverName) return null
   const ctx = { declared, refs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
@@ -384,8 +432,30 @@ export function compileAway(code, id, ata, options) {
   const wrappers = { full: false, verdict: false }
   let usesRuntime = false
   let usesSafeRe = false
+  const resolverCalls = new Set()
+  if (resolverName) {
+    for (const r of refs) {
+      if (r.node.name !== resolverName) continue
+      const call = r.parent
+      if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length < 1 || call.arguments.length > 3) continue
+      if (call.arguments.some((a) => a.type === 'SpreadElement')) continue
+      const extra = resolverOptionsArg(call.arguments, code, ctx)
+      if (extra === NOT_STATIC) continue
+      const schema = staticValue(call.arguments[0], ctx)
+      if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
+      let src = null
+      try { src = compiledModuleFor(schema, { format: 'esm', order: true }) } catch { src = null }
+      if (!src || !src.includes('function _ataOrder(')) continue
+      const index = modules.length
+      const fill = /\nfunction applyDefaults\(/.test(src)
+      modules.push(inlineModule(src, index, false, fill ? '{ validate, applyDefaults }' : '{ validate }'))
+      s.overwrite(call.start, call.end, `__ataCompiledResolver(__ataCompiled${index}${extra})`)
+      resolverCalls.add(call)
+      done.add(call)
+    }
+  }
   for (const r of refs) {
-    if (r.node.name !== validatorName) continue
+    if (!validatorName || r.node.name !== validatorName) continue
     const expr = r.parent
     if (!expr || expr.type !== 'NewExpression' || r.key !== 'callee') continue
     if (expr.arguments.length !== 1 && expr.arguments.length !== 2) continue
@@ -419,27 +489,32 @@ export function compileAway(code, id, ata, options) {
   // leave the import once nothing else uses them, and the import goes when it
   // is left empty, so no bundler has to prove the runtime unused.
   const inReplaced = (node) => { for (const e of done) if (node.start >= e.start && node.end <= e.end) return true; return false }
-  const unused = new Set()
-  for (const spec of importDecl.specifiers) {
-    if (spec.type !== 'ImportSpecifier') continue
-    const name = spec.local.name
-    if (name !== validatorName && name !== defineSchema) continue
-    if (ctx.declared.get(name) !== 1) continue
-    if (!refs.some((r) => r.node.name === name && !inReplaced(r.node))) unused.add(spec)
+  const prune = (decl, names) => {
+    const unused = new Set()
+    for (const spec of decl.specifiers) {
+      if (spec.type !== 'ImportSpecifier') continue
+      const name = spec.local.name
+      if (!names.includes(name)) continue
+      if (ctx.declared.get(name) !== 1) continue
+      if (!refs.some((r) => r.node.name === name && !inReplaced(r.node))) unused.add(spec)
+    }
+    if (unused.size === decl.specifiers.length) s.remove(decl.start, decl.end)
+    else if (unused.size) {
+      const kept = decl.specifiers.filter((sp) => !unused.has(sp))
+      const text = (sp) => code.slice(sp.start, sp.end)
+      const def = kept.find((sp) => sp.type === 'ImportDefaultSpecifier')
+      const named = kept.filter((sp) => sp.type === 'ImportSpecifier')
+      const clause = [def ? text(def) : null, named.length ? `{ ${named.map(text).join(', ')} }` : null].filter(Boolean).join(', ')
+      s.overwrite(decl.start, decl.end, `import ${clause} from ${code.slice(decl.source.start, decl.source.end)}`)
+    }
   }
-  if (unused.size === importDecl.specifiers.length) s.remove(importDecl.start, importDecl.end)
-  else if (unused.size) {
-    const kept = importDecl.specifiers.filter((sp) => !unused.has(sp))
-    const text = (sp) => code.slice(sp.start, sp.end)
-    const def = kept.find((sp) => sp.type === 'ImportDefaultSpecifier')
-    const named = kept.filter((sp) => sp.type === 'ImportSpecifier')
-    const clause = [def ? text(def) : null, named.length ? `{ ${named.map(text).join(', ')} }` : null].filter(Boolean).join(', ')
-    s.overwrite(importDecl.start, importDecl.end, `import ${clause} from ${code.slice(importDecl.source.start, importDecl.source.end)}`)
-  }
+  if (importDecl) prune(importDecl, [validatorName, defineSchema].filter(Boolean))
+  if (resolverImport && resolverCalls.size) prune(resolverImport, [resolverName])
   // The builder calls read here are pure, and marked so: a schema constant
   // only the replaced call used, and the builder with it, can then leave the
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
+  if (resolverCalls.size) s.prepend(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
