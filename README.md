@@ -195,8 +195,23 @@ otherwise:
 
 - `Validator` is a named import from `ata-validator`;
 - the schema argument is an object literal, a top-level `const` bound to one,
-  the default import of a relative `.json` file, or `defineSchema(...)` around
-  one of those; calls to the `t` builder from `ata-validator/t` whose arguments are
+  the default import of a relative `.json` file, a name imported from a
+  relative JavaScript or TypeScript module (`import { Signup } from
+  './schemas'`, `.js` standing for `.ts` as TypeScript writes it) that the
+  module exports as such a value, directly, as `export default`, or through
+  `export { ... } from`, or `defineSchema(...)` around one of those;
+- the value is not changed after it is written: every use of the constant, in
+  its own file and in the file with the call, is an argument of
+  `new Validator(...)` or `ataResolver(...)`, possibly through
+  `defineSchema(...)`, the `t` builder or an object or array literal that is
+  itself such a constant, or an export. A write such as
+  `schema.required = [...]`, a second name for it or a call that could change
+  it keeps the call on the runtime, since the build reads the value as written
+  (before 0.9.0 such a schema was compiled as written and could accept what the
+  runtime rejects). The build reads those two files only: a third module that
+  imports the schema and changes it is not seen, so a schema shared that way
+  should not be changed at run time. The import of the schema module stays,
+  so the bundler rebuilds when it changes; calls to the `t` builder from `ata-validator/t` whose arguments are
   such values are run at build time, since the builder returns plain JSON Schema,
   and are marked pure so a schema only the replaced call used leaves the bundle
   with the builder (`t.refine` and `t.recursive`, which take a function, stay on

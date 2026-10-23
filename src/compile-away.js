@@ -111,6 +111,60 @@ function scan(ast) {
   return { declared, refs }
 }
 
+// Whether every use of the constant `name` in its file leaves its value as
+// written, so that the value read at build time is the one the runtime gets:
+// an argument (the schema or the options) of `new Validator(...)` or
+// `ataResolver(...)`, possibly through `defineSchema(...)`, the t builder and
+// object or array literals, or the value of another top-level constant that
+// passes the same test, or an export. Anything else, a
+// write such as `schema.required = [...]`, a call that could change it, or a
+// second name for it, keeps the call on the runtime: a schema changed after it
+// was written was compiled as written and accepted what the runtime rejects.
+function readOnly(name, ctx, seen = new Set()) {
+  if (!ctx.refs) return false
+  if (seen.has(name)) return true
+  seen.add(name)
+  for (const r of ctx.refs) {
+    if (r.node.name !== name) continue
+    if (!readOnlyUse(r, ctx, seen)) return false
+  }
+  return true
+}
+
+function readOnlyUse(r, ctx, seen) {
+  if (r.parent && r.parent.type === 'ExportSpecifier') return true
+  let node = r.node
+  let up = r.parent
+  for (;;) {
+    if (!up) return false
+    if (up.type === 'ObjectProperty') {
+      if (up.value !== node) return false
+    } else if (up.type === 'NewExpression' || up.type === 'CallExpression') {
+      if (!up.arguments.includes(node)) return false
+      const c = up.callee
+      // `new Validator(...)` and `ataResolver(...)` take the value and end here.
+      if (c.type === 'Identifier' && ctx.consumers && ctx.consumers.has(c.name)) return true
+      // `defineSchema(...)` and the t builder hand it on: follow where the call goes.
+      const passes = (c.type === 'Identifier' && c.name === ctx.defineSchema) ||
+        (ctx.tName && c.type === 'MemberExpression' && !c.computed && c.object.type === 'Identifier' && c.object.name === ctx.tName)
+      if (!passes) return false
+    } else if (up.type === 'VariableDeclarator') {
+      if (up.init !== node || up.id.type !== 'Identifier') return false
+      const list = up.__parent
+      const top = list && list.type === 'VariableDeclaration' && list.kind === 'const' && list.__parent &&
+        (list.__parent.type === 'Program' || list.__parent.type === 'ExportNamedDeclaration')
+      return top ? readOnly(up.id.name, ctx, seen) : false
+    } else if (up.type === 'ExportDefaultDeclaration') {
+      return true
+    } else if (!(up.type === 'ObjectExpression' || up.type === 'ArrayExpression' || up.type === 'TSAsExpression' ||
+        up.type === 'TSSatisfiesExpression' || up.type === 'TSNonNullExpression' || up.type === 'ParenthesizedExpression')) {
+      return false
+    }
+    node = up
+    up = up.__parent
+  }
+}
+
 // The value an expression stands for, when reading it needs no code to run.
 function staticValue(node, ctx, seen = new Set()) {
   switch (node.type) {
@@ -145,7 +199,7 @@ function staticValue(node, ctx, seen = new Set()) {
     case 'Identifier': {
       if (seen.has(node.name) || ctx.declared.get(node.name) !== 1) return NOT_STATIC
       const source = ctx.constants.get(node.name)
-      if (!source) return NOT_STATIC
+      if (!source || !readOnly(node.name, ctx)) return NOT_STATIC
       seen.add(node.name)
       const v = source.json !== undefined ? source.json() : staticValue(source.init, ctx, seen)
       seen.delete(node.name)
@@ -179,23 +233,104 @@ function staticValue(node, ctx, seen = new Set()) {
   return NOT_STATIC
 }
 
-// Top level `const NAME = <expr>` and `import NAME from './x.json'`.
-function constantsOf(ast, id) {
+// Top level `const NAME = <expr>`, `import NAME from './x.json'`, and names
+// imported from a relative JavaScript or TypeScript module, read from that
+// module's exports by the same rules (see moduleExport).
+function constantsOf(ast, id, seen = new Set()) {
   const constants = new Map()
   for (const stmt of ast.program.body) {
     const decl = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt
     if (decl && decl.type === 'VariableDeclaration' && decl.kind === 'const') {
       for (const d of decl.declarations) if (d.id.type === 'Identifier' && d.init) constants.set(d.id.name, { init: d.init })
     }
-    if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type' && /^\.{1,2}\/.*\.json$/.test(stmt.source.value)) {
+    if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type' || !/^\.{1,2}\//.test(stmt.source.value)) continue
+    if (/\.json$/.test(stmt.source.value)) {
       const def = stmt.specifiers.find((s) => s.type === 'ImportDefaultSpecifier')
       if (def) {
         const file = path.resolve(path.dirname(id), stmt.source.value)
         constants.set(def.local.name, { json: () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return NOT_STATIC } } })
       }
+      continue
+    }
+    for (const sp of stmt.specifiers) {
+      if (sp.type === 'ImportNamespaceSpecifier' || sp.importKind === 'type') continue
+      const name = sp.type === 'ImportDefaultSpecifier' ? 'default' : sp.imported.type === 'Identifier' ? sp.imported.name : sp.imported.value
+      const source = stmt.source.value
+      constants.set(sp.local.name, { json: () => moduleExport(resolveModule(id, source), name, seen) })
     }
   }
   return constants
+}
+
+const MODULE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']
+
+// The file a relative import names, as TypeScript and the bundlers find it:
+// as written, with an extension added, as a folder's index, or with `.js`
+// standing for `.ts` (and `.mjs` for `.mts`).
+function resolveModule(from, spec) {
+  const base = path.resolve(path.dirname(from), spec)
+  const candidates = [base, ...MODULE_EXTENSIONS.map((e) => base + e), ...MODULE_EXTENSIONS.map((e) => path.join(base, 'index' + e))]
+  const swapped = { '.js': ['.ts', '.tsx'], '.jsx': ['.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] }[path.extname(base)]
+  if (swapped) candidates.push(...swapped.map((e) => base.slice(0, -path.extname(base).length) + e))
+  for (const c of candidates) {
+    try { if (fs.statSync(c).isFile()) return c } catch {}
+  }
+  return null
+}
+
+// The value module `file` exports as `name`, read without running it: an
+// exported `const`, `export default <value>`, `export { local as name }`, or
+// `export { x as name } from './other'`, followed through other modules up to
+// a few levels. NOT_STATIC for anything else, or when a module is reached
+// again on the way (a cycle).
+function moduleExport(file, name, seen) {
+  if (!file || seen.size > 8) return NOT_STATIC
+  const key = file + '\0' + name
+  if (seen.has(key)) return NOT_STATIC
+  let ast
+  try {
+    ast = parse(fs.readFileSync(file, 'utf8'), { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false })
+  } catch {
+    return NOT_STATIC
+  }
+  const next = new Set(seen).add(key)
+  let defineSchema = null
+  const consumers = new Set()
+  for (const stmt of ast.program.body) {
+    if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== 'ata-validator' || stmt.importKind === 'type') continue
+    for (const sp of stmt.specifiers) {
+      if (sp.type !== 'ImportSpecifier') continue
+      const imported = sp.imported.name || sp.imported.value
+      if (imported === 'defineSchema') defineSchema = sp.local.name
+      if (imported === 'Validator') consumers.add(sp.local.name)
+    }
+  }
+  const { declared, refs } = scan(ast)
+  const ctx = { declared, refs, consumers, constants: constantsOf(ast, file, next), defineSchema, t: null, tName: null, tCalls: new Set() }
+  for (const stmt of ast.program.body) {
+    if (stmt.type === 'ExportDefaultDeclaration' && name === 'default') {
+      return stmt.declaration.type.endsWith('Declaration') ? NOT_STATIC : staticValue(stmt.declaration, ctx)
+    }
+    if (stmt.type !== 'ExportNamedDeclaration' || stmt.exportKind === 'type') continue
+    if (stmt.declaration) {
+      const d = stmt.declaration
+      if (d.type === 'VariableDeclaration' && d.kind === 'const') {
+        for (const v of d.declarations) {
+          if (v.id.type === 'Identifier' && v.id.name === name && v.init) return readOnly(name, ctx) ? staticValue(v.init, ctx) : NOT_STATIC
+        }
+      }
+      continue
+    }
+    for (const sp of stmt.specifiers) {
+      if (sp.type !== 'ExportSpecifier' || sp.exportKind === 'type') continue
+      const exported = sp.exported.type === 'Identifier' ? sp.exported.name : sp.exported.value
+      if (exported !== name) continue
+      const local = sp.local.type === 'Identifier' ? sp.local.name : sp.local.value
+      if (stmt.source) return moduleExport(resolveModule(file, stmt.source.value), local, next)
+      return staticValue({ type: 'Identifier', name: local }, ctx)
+    }
+  }
+  return NOT_STATIC
 }
 
 // `const name = new Validator(...)`, declared once, not exported, and used only
@@ -424,7 +559,8 @@ export function compileAway(code, id, ata, options) {
   if (validatorName && declared.get(validatorName) !== 1) validatorName = null
   if (resolverName && declared.get(resolverName) !== 1) resolverName = null
   if (!validatorName && !resolverName) return null
-  const ctx = { declared, refs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
+  const consumers = new Set([validatorName, resolverName].filter(Boolean))
+  const ctx = { declared, refs, consumers, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
   const modules = []
