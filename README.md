@@ -237,9 +237,16 @@ resolver's answer, values and field errors, is the one `ataResolver` gives.
 The schema is read as above, and the call is replaced only when it passes no
 validator options (or `undefined` or `{}` for them, with a literal
 `{ raw: true }` or `{ raw: false }` for the resolver's own options), when the
-installed `@hookform/resolvers` exports `ataCompiledResolver`, and when
-ata-validator writes modules in the runtime's error order (1.57.0). Options
-such as `coerceTypes` have no compiled form and keep the runtime.
+installed `@hookform/resolvers` exports `ataCompiledResolver` from every file
+its export map gives for `./ata-validator`, and when ata-validator writes
+modules in the runtime's error order (1.57.0). Options such as `coerceTypes`
+have no compiled form and keep the runtime.
+
+`ataCompiledResolver` is not in a released `@hookform/resolvers` yet
+([react-hook-form/resolvers#881](https://github.com/react-hook-form/resolvers/pull/881)).
+Until it is, the call stays as written and the form keeps working as before;
+once a release that has it is installed, the next build replaces the call
+without any change to the app.
 
 Any other option (`new Validator(schema, { coerceTypes: true })`), a schema
 built at run time, or an instance passed around stays as written.

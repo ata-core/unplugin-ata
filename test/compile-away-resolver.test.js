@@ -113,6 +113,28 @@ describe('what stays on the runtime', () => {
     assert.equal(rewrite('entry.mjs', { ...build, compiledResolver: () => false }), null)
   })
 
+  it('a resolvers package whose import file lacks ataCompiledResolver, though its require file has it', async () => {
+    // A bundler takes the `import` file; probing only the `require` one built an import that did not exist.
+    const { __internal } = await import('../src/core.js')
+    const ataApi = await __internal.loadAta()
+    for (const [mjs, cjs, expected] of [
+      ['// runtime only\n', '// ataCompiledResolver\n', false],
+      ['// ataCompiledResolver\n', '// runtime only\n', false],
+      ['// ataCompiledResolver\n', '// ataCompiledResolver\n', true],
+    ]) {
+      const dir = await fs.mkdtemp(path.join(here, 'fixtures', 'tmp-probe-'))
+      try {
+        await writeResolvers(dir, true)
+        const pkg = path.join(dir, 'node_modules', '@hookform', 'resolvers', 'ata-validator')
+        await fs.writeFile(path.join(pkg, 'index.mjs'), mjs)
+        await fs.writeFile(path.join(pkg, 'index.cjs'), cjs)
+        assert.equal(ataApi.compiledResolver(path.join(dir, 'app.mjs')), expected)
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true })
+      }
+    }
+  })
+
   it('an ata-validator without the runtime error order', () => {
     const old = { ...ata, compiledModuleFor: (s, o) => build.compiledModuleFor(s, { ...o, order: false }) }
     assert.equal(rewrite('entry.mjs', old), null)

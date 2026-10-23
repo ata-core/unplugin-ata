@@ -17,6 +17,33 @@ import { pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
+// Whether every file @hookform/resolvers' export map gives for ./ata-validator
+// has `name`. `entry` is the file `require` resolved to; the package root is
+// the nearest folder above it whose package.json is @hookform/resolvers.
+function resolverExportsAll (entry, name) {
+  try {
+    let dir = path.dirname(entry)
+    let pkg
+    for (;;) {
+      try { pkg = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')) } catch { pkg = undefined }
+      if (pkg && pkg.name === '@hookform/resolvers') break
+      const up = path.dirname(dir)
+      if (up === dir) return false
+      dir = up
+    }
+    const targets = []
+    const collect = (node) => {
+      if (typeof node === 'string') { if (node.endsWith('.js') || node.endsWith('.mjs') || node.endsWith('.cjs')) targets.push(node) }
+      else if (node && typeof node === 'object') for (const v of Object.values(node)) collect(v)
+    }
+    collect(pkg.exports && pkg.exports['./ata-validator'])
+    if (targets.length === 0) targets.push(entry)
+    return targets.every((t) => readFileSync(t === entry ? t : path.join(dir, t), 'utf8').includes(name))
+  } catch {
+    return false
+  }
+}
+
 function pascal(str) {
   const cleaned = String(str)
     .replace(/[^A-Za-z0-9_]+/g, '_')
@@ -105,16 +132,19 @@ async function loadAta() {
     try { compiledOrder = (build.compiledModuleFor({ type: 'object', properties: { a: { type: 'string' } } }, { format: 'esm', order: true }) || '').includes('function _ataOrder(') } catch { compiledOrder = false }
   }
   // Whether the @hookform/resolvers a file imports has ataCompiledResolver,
-  // asked of the copy that file resolves to, once per copy.
+  // asked of the copy that file resolves to, once per copy. Every file the
+  // package's export map gives for ./ata-validator must have it: a bundler
+  // takes the `import` one, `require` resolves the other, and a copy where
+  // only one of them has it would build an import that does not exist.
   const resolverCopies = new Map()
   const compiledResolver = (file) => {
     if (!compiledOrder) return false
-    let target
-    try { target = createRequire(file).resolve('@hookform/resolvers/ata-validator') } catch { return false }
-    let has = resolverCopies.get(target)
+    let entry
+    try { entry = createRequire(file).resolve('@hookform/resolvers/ata-validator') } catch { return false }
+    let has = resolverCopies.get(entry)
     if (has === undefined) {
-      try { has = readFileSync(target, 'utf8').includes('ataCompiledResolver') } catch { has = false }
-      resolverCopies.set(target, has)
+      has = resolverExportsAll(entry, 'ataCompiledResolver')
+      resolverCopies.set(entry, has)
     }
     return has
   }
