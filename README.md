@@ -311,8 +311,36 @@ form stays on the runtime validator. Importing `createPrecompiledValidator` leav
 the runtime validator out of the bundle from @rjsf/validator-ata 6.11.0. Once
 no other use of `validator` is left, its import goes too.
 
+### Handed to a router or a form library: `body: check`
+
+A validator handed over as a value, an argument of a call directly or inside
+an object or array literal, is compiled away too, where the installed
+ata-validator's compiled wrapper carries Standard Schema (1.60.0). Elysia,
+Hono's validator helpers, TanStack Form and tRPC read a validator through
+`~standard`, and the compiled wrapper answers that as the runtime does:
+
+```ts
+import { Elysia } from 'elysia'
+import { Validator } from 'ata-validator'
+
+const signup = new Validator(schema)
+new Elysia().post('/signup', ({ body }) => body, { body: signup })
+```
+
+For the Elysia app above, built with `Bun.build` on Bun 1.4.0, the bundle went
+from 940 KB to 441 KB, the process from 26.3 to 18.0 ms and its first two
+requests from 8.1 to 4.3 ms (medians of 21 runs); the `new Function` calls
+left in the bundle are Elysia's own.
+
+What the consumer does with the value is not read: it gets `validate()`,
+`isValidObject()`, `validateJSON()`, `isValidJSON()` and `~standard`, and
+calling anything else on the compiled wrapper throws a TypeError rather than
+answering differently. A use in the file itself that reads a property,
+assigns, returns or exports the validator keeps the runtime.
+
 Any other option (`new Validator(schema, { coerceTypes: true })`), a schema
-built at run time, or an instance passed around stays as written.
+built at run time, or an instance passed around in those other ways stays as
+written.
 
 ## How it works
 

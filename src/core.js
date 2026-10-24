@@ -110,12 +110,18 @@ async function loadAta() {
     try { const m = await import('ata-validator/t'); t = (m.default ?? m).t ?? m.t ?? null } catch { t = null }
   }
   let compiledExtendChecks = false
+  // Whether the wrapper carries Standard Schema (`~standard`), from
+  // ata-validator 1.60.0: then a validator handed to something that reads it
+  // (a router's `body: v`, a form library) can be compiled away as well.
+  let compiledStandard = false
   if (canCompileAway) {
     try {
       const c = await import('ata-validator/compiled')
       const fromCompiled = (c.default ?? c).fromCompiled ?? c.fromCompiled
-      compiledExtendChecks = typeof fromCompiled({ validate: () => ({ valid: true, errors: [] }), isValid: () => true }, {}, { useDefaults: false })._extendChecks === 'function'
-    } catch { compiledExtendChecks = false }
+      const w = fromCompiled({ validate: () => ({ valid: true, errors: [] }), isValid: () => true }, {}, { useDefaults: false })
+      compiledExtendChecks = typeof w._extendChecks === 'function'
+      compiledStandard = w['~standard'] !== undefined && typeof w['~standard'].validate === 'function' && w['~standard'].vendor === 'ata-validator'
+    } catch { compiledExtendChecks = false; compiledStandard = false }
   }
   // Compact modules, from ata-validator 1.50.0: the verdict and the schema,
   // with errors from ata-validator/error-runtime, which the bundle then holds
@@ -204,6 +210,7 @@ async function loadAta() {
     compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
     compiledVerdict,
     compiledExtendChecks,
+    compiledStandard,
     t,
   }
 }

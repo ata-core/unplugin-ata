@@ -12,7 +12,12 @@
 //     `defineSchema(...)` around any of those;
 //   - the result is assigned to a `const` declared once in the file, not
 //     exported, and every other use of that name calls validate(),
-//     isValidObject(), validateJSON() or isValidJSON() on it;
+//     isValidObject(), validateJSON() or isValidJSON() on it, or hands it
+//     over as a value (`body: check` in a route's options, `resolver(check)`),
+//     where the wrapper carries Standard Schema (ata-validator 1.60.0) and
+//     answers a consumer that reads `~standard` as the runtime does. Such a
+//     consumer calling anything else on it gets a TypeError, not a wrong
+//     answer; a use that reads a property of the instance keeps the runtime;
 //   - ata-validator's compiledModuleFor() returns a module for the schema. It
 //     declines schemas the replacement would not answer exactly as the runtime
 //     does (custom error messages, shapes its error generator cannot express),
@@ -366,15 +371,41 @@ function replaceableBinding(newExpr, ctx) {
   const name = decl.id.name
   if (ctx.declared.get(name) !== 1) return null
   const methods = new Set()
+  let handed = false
   for (const r of ctx.refs) {
     if (r.node.name !== name) continue
+    if (r.node === decl.id) continue
     const p = r.parent
     const member = p && (p.type === 'MemberExpression' || p.type === 'OptionalMemberExpression') && r.key === 'object' && !p.computed && p.property.type === 'Identifier' && METHODS.has(p.property.name)
     const called = member && p.__parent && (p.__parent.type === 'CallExpression' || p.__parent.type === 'OptionalCallExpression') && p.__parent.callee === p
-    if (!called) return null
-    methods.add(p.property.name)
+    if (called) { methods.add(p.property.name); continue }
+    if (ctx.compiledStandard && handedOver(r)) { handed = true; continue }
+    return null
   }
+  // A validator handed over needs the full wrapper: the consumer reads
+  // `~standard`, which gives errors.
+  if (handed) methods.add('validate')
   return { name, methods }
+}
+
+// Whether a use of the validator hands it to something else as a value: an
+// argument of a call, directly or inside object and array literals (`{ body:
+// v }`, `[v]`), through TypeScript wrappers and parentheses. The call itself
+// is not read (it may be any function); only the shape of the use is. A
+// member read, an assignment, an export or a return keeps the runtime.
+function handedOver (r) {
+  let node = r.node
+  let up = r.parent
+  for (;;) {
+    if (!up) return false
+    if (up.type === 'CallExpression' || up.type === 'OptionalCallExpression' || up.type === 'NewExpression') {
+      return up.arguments.includes(node)
+    }
+    if (up.type === 'ObjectProperty') { if (up.value !== node) return false }
+    else if (!(up.type === 'ObjectExpression' || up.type === 'ArrayExpression' || up.type === 'TSAsExpression' || up.type === 'TSSatisfiesExpression' || up.type === 'TSNonNullExpression' || up.type === 'ParenthesizedExpression')) return false
+    node = up
+    up = up.__parent
+  }
 }
 
 // Code that only asks for a boolean never reads an error.
@@ -619,7 +650,7 @@ export function compileAway(code, id, ata, options) {
       rjsfSchemaAttrs.add(schemaAttr)
     }
   }
-  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
+  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, compiledStandard: ata.compiledStandard === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
   const modules = []
