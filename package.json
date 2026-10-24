@@ -72,7 +72,9 @@
     "node": ">=18.0.0"
   },
   "peerDependencies": {
-    "ata-validator": ">=1.0.0"
+    "ata-validator": ">=1.0.0",
+    "ts-json-schema-generator": ">=2.0.0",
+    "typescript": ">=5.0.0"
   },
   "dependencies": {
     "@babel/parser": "^7.29.9",
@@ -87,6 +89,7 @@
     "esbuild": "^0.28.0",
     "rolldown": "^1.2.8",
     "rollup": "^4.60.0",
+    "ts-json-schema-generator": "^2.9.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.2",
     "webpack": "^5.105.0"
@@ -94,5 +97,13 @@
   "types": "./src/index.d.ts",
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependenciesMeta": {
+    "ts-json-schema-generator": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
   }
 }

@@ -49,6 +49,14 @@
 //   - the module is written in the runtime's error order and fills defaults
 //     before the check, as rjsf's runtime validator does (core.js rjsfCompiler).
 // rjsf's tests hold the precompiled validator to the runtime one.
+//
+// `schemaOf<T>()` from ata-validator, with `T` a named type, stands for the
+// JSON Schema of that type, read with the TypeScript checker (`typeSchema` in
+// the options, from core.js): the call is replaced by the schema as a literal,
+// and `new Validator(schemaOf<T>())` then compiles like any static schema. A
+// call the generator cannot answer (an inline type literal, a name it does
+// not find, the generator not installed) is a build error: the function has
+// no run-time form, so leaving the call in place would throw on load.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -224,6 +232,7 @@ function staticValue(node, ctx, seen = new Set()) {
     }
     case 'CallExpression': {
       if (node.callee.type === 'Identifier' && node.callee.name === ctx.defineSchema && node.arguments.length === 1) return staticValue(node.arguments[0], ctx, seen)
+      if (ctx.typeSchemas && ctx.typeSchemas.has(node)) return ctx.typeSchemas.get(node)
       // `t.object(...)` and the rest of the builder from ata-validator/t. It
       // returns plain JSON Schema and holds no state, so a call whose
       // arguments the build can read gives here what it gives at run time.
@@ -536,6 +545,7 @@ function compiledOptionsArg(node, ctx, supported) {
 export function compileAway(code, id, ata, options) {
   const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
   const collect = options && Array.isArray(options.collect) ? options.collect : null
+  const typeSchema = options && typeof options.typeSchema === 'function' ? options.typeSchema : null
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
@@ -556,6 +566,7 @@ export function compileAway(code, id, ata, options) {
   let validatorName = null
   let importDecl = null
   let defineSchema = null
+  let schemaOfName = null
   let lastImportEnd = 0
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration') continue
@@ -566,6 +577,7 @@ export function compileAway(code, id, ata, options) {
       const imported = s.imported.type === 'Identifier' ? s.imported.name : s.imported.value
       if (imported === 'Validator') { validatorName = s.local.name; importDecl = stmt }
       if (imported === 'defineSchema') defineSchema = s.local.name
+      if (imported === 'schemaOf') { schemaOfName = s.local.name; if (!importDecl) importDecl = stmt }
     }
   }
   let resolverName = null
@@ -601,7 +613,7 @@ export function compileAway(code, id, ata, options) {
     }
     if (formNames.size === 0) rjsfName = null
   }
-  if (!validatorName && !resolverName && !rjsfName) return null
+  if (!validatorName && !resolverName && !rjsfName && !schemaOfName) return null
   let tName = null
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== 'ata-validator/t' || stmt.importKind === 'type') continue
@@ -625,7 +637,24 @@ export function compileAway(code, id, ata, options) {
   if (validatorName && declared.get(validatorName) !== 1) validatorName = null
   if (resolverName && declared.get(resolverName) !== 1) resolverName = null
   if (rjsfName && declared.get(rjsfName) !== 1) rjsfName = null
-  if (!validatorName && !resolverName && !rjsfName) return null
+  if (schemaOfName && declared.get(schemaOfName) !== 1) schemaOfName = null
+  // Every schemaOf<T>() call gets its schema now, or the build stops.
+  const typeSchemas = new Map()
+  if (schemaOfName) {
+    for (const r of refs) {
+      if (r.node.name !== schemaOfName) continue
+      const call = r.parent
+      const where = `${id}:${r.node.loc ? r.node.loc.start.line : '?'}`
+      if (!call || call.type !== 'CallExpression' || r.key !== 'callee') throw new Error(`${where}: schemaOf is only replaced as a call, schemaOf<T>()`)
+      const tp = call.typeParameters || call.typeArguments
+      if (!tp || tp.params.length !== 1 || call.arguments.length !== 0) throw new Error(`${where}: schemaOf takes one type argument and no value: schemaOf<User>()`)
+      const t = tp.params[0]
+      if (t.type !== 'TSTypeReference' || t.typeName.type !== 'Identifier' || t.typeParameters) throw new Error(`${where}: schemaOf<T>() needs a named type (interface or type alias); name the type and pass its name`)
+      if (!typeSchema) throw new Error(`${where}: schemaOf<${t.typeName.name}>() needs ts-json-schema-generator and typescript installed beside @ata-project/unplugin`)
+      typeSchemas.set(call, typeSchema(id, t.typeName.name))
+    }
+  }
+  if (!validatorName && !resolverName && !rjsfName && typeSchemas.size === 0) return null
   const consumers = new Set([validatorName, resolverName].filter(Boolean))
   // The rjsf forms that can take a precompiled validator: `validator={<the
   // import>}` and `schema={...}` on an rjsf form element without spread
@@ -650,7 +679,7 @@ export function compileAway(code, id, ata, options) {
       rjsfSchemaAttrs.add(schemaAttr)
     }
   }
-  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, compiledStandard: ata.compiledStandard === true, t: ata.t || null, tName, tCalls: new Set() }
+  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, typeSchemas, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, compiledStandard: ata.compiledStandard === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
   const modules = []
@@ -734,6 +763,16 @@ export function compileAway(code, id, ata, options) {
     s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
     done.add(expr)
   }
+  // schemaOf<T>() calls left outside a replaced expression become the schema
+  // as a literal (parsed from JSON text: a literal would make a "__proto__"
+  // key the object's prototype).
+  for (const [call, schema] of typeSchemas) {
+    let inside = false
+    for (const e of done) if (call.start >= e.start && call.end <= e.end) { inside = true; break }
+    if (inside) continue
+    s.overwrite(call.start, call.end, `JSON.parse(${JSON.stringify(JSON.stringify(schema))})`)
+    done.add(call)
+  }
   if (done.size === 0) return null
 
   // `Validator`, and `defineSchema` when it only wrapped a replaced schema,
@@ -759,7 +798,7 @@ export function compileAway(code, id, ata, options) {
       s.overwrite(decl.start, decl.end, `import ${clause} from ${code.slice(decl.source.start, decl.source.end)}`)
     }
   }
-  if (importDecl) prune(importDecl, [validatorName, defineSchema].filter(Boolean))
+  if (importDecl) prune(importDecl, [validatorName, defineSchema, schemaOfName].filter(Boolean))
   if (resolverImport && resolverCalls.size) prune(resolverImport, [resolverName])
   // The default import of @rjsf/validator-ata goes when no use of it is left,
   // and with it the runtime validator.

@@ -15,6 +15,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
+import * as fsSync from 'node:fs'
 import { createRequire } from 'node:module'
 
 // Whether every file @hookform/resolvers' export map gives for ./ata-validator
@@ -41,6 +42,72 @@ function resolverExportsAll (entry, name) {
     return targets.every((t) => readFileSync(t === entry ? t : path.join(dir, t), 'utf8').includes(name))
   } catch {
     return false
+  }
+}
+
+// `schemaOf<T>()`: the JSON Schema of a TypeScript type, read by the
+// TypeScript checker through ts-json-schema-generator, both optional
+// dependencies of this plugin. One generator per tsconfig (the nearest one
+// above the file, else the file alone), kept for the build; the plugin
+// resets it at build start so a type edited in watch mode is read again.
+// JSDoc tags on the properties carry what a type cannot say (@format,
+// @minimum, @pattern, @minLength, @maxItems, @asType integer). A type is a
+// closed object unless the options say otherwise.
+function createTypeSchemas (options = {}) {
+  const generators = new Map()
+  let mod = null
+  let missing = null
+  // The generator is loaded once, before the first transform that needs it
+  // (the transform awaits ready()); schemaFor itself is synchronous, as the
+  // compile-away pass is.
+  const ready = async () => {
+    if (mod || missing) return
+    try { mod = await import('ts-json-schema-generator') } catch (e) { missing = e }
+  }
+  const tsconfigFor = (file) => {
+    if (options.tsconfig) return path.resolve(options.tsconfig)
+    let dir = path.dirname(path.resolve(file))
+    for (;;) {
+      const c = path.join(dir, 'tsconfig.json')
+      try { if (fsSync.statSync(c).isFile()) return c } catch {}
+      const up = path.dirname(dir)
+      if (up === dir) return null
+      dir = up
+    }
+  }
+  const cache = new Map()
+  return {
+    ready,
+    reset () { generators.clear(); cache.clear() },
+    schemaFor (file, typeName) {
+      if (!mod && !missing) throw new Error('schemaOf: the type-to-schema generator was not loaded before the transform (ready() was not awaited)')
+      if (missing) {
+        const err = new Error(`schemaOf<${typeName}>() in ${file} needs ts-json-schema-generator and typescript, which @ata-project/unplugin lists as optional: npm install -D ts-json-schema-generator typescript`)
+        err.cause = missing
+        throw err
+      }
+      const key = file + '\0' + typeName
+      if (cache.has(key)) return cache.get(key)
+      const tsconfig = tsconfigFor(file)
+      const gkey = tsconfig || path.resolve(file)
+      let gen = generators.get(gkey)
+      if (!gen) {
+        // Without a tsconfig the program is the file and what it imports.
+        gen = mod.createGenerator({ path: tsconfig ? undefined : path.resolve(file), tsconfig: tsconfig || undefined, type: '*', expose: 'none', topRef: false, skipTypeCheck: true, additionalProperties: options.additionalProperties === true, jsDoc: 'extended', ...(options.generator || {}) })
+        generators.set(gkey, gen)
+      }
+      let schema
+      try { schema = gen.createSchema(typeName) } catch (e) {
+        const err = new Error(`schemaOf<${typeName}>() in ${file}: ${e.message.split('\n')[0]}`)
+        err.cause = e
+        throw err
+      }
+      // One document, as ata reads it: the generator's draft-07 by default.
+      delete schema.$ref
+      if (schema.definitions && Object.keys(schema.definitions).length === 0) delete schema.definitions
+      cache.set(key, schema)
+      return schema
+    },
   }
 }
 
@@ -480,6 +547,8 @@ export function createSession(userOptions = {}) {
     options,
     root: userOptions.root ?? process.cwd(),
     logger: null,
+    // `schemaOf<T>()` resolution, one per session; reset at build start.
+    typeSchemas: createTypeSchemas(userOptions.types || {}),
     // Per file, what compileAway replaced and what it kept, for the report at
     // the end of the build.
     report: new Map(),
@@ -509,4 +578,4 @@ export function createSession(userOptions = {}) {
 }
 
 export { normalizeAlias, DEFAULT_OPTIONS }
-export const __internal = { loadAta, resolveSchemaFiles, compileOne, outputPaths, globToRegExp, isSchemaConvention }
+export const __internal = { loadAta, resolveSchemaFiles, compileOne, outputPaths, globToRegExp, isSchemaConvention, createTypeSchemas }

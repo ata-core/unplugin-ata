@@ -312,6 +312,49 @@ form stays on the runtime validator. Importing `createPrecompiledValidator` leav
 the runtime validator out of the bundle from @rjsf/validator-ata 6.11.0. Once
 no other use of `validator` is left, its import goes too.
 
+### A schema from a TypeScript type: `schemaOf<User>()`
+
+```ts
+import { Validator, schemaOf } from 'ata-validator'
+
+interface User {
+  /** @minimum 1 */
+  id: number
+  /** @format email */
+  email: string
+  /** @minLength 1 */
+  name: string
+  role: 'admin' | 'user'
+}
+
+const user = new Validator(schemaOf<User>())
+```
+
+The plugin reads `User` with the TypeScript checker and writes its JSON
+Schema in place of the call; the `new Validator(...)` then compiles away like
+any static schema, and a bare `schemaOf<User>()` becomes the schema as a
+value, for an OpenAPI document or a form. The JSDoc tags on the properties
+carry what a type cannot say: `@format`, `@minimum`, `@maximum`, `@minLength`,
+`@maxLength`, `@maxItems`, `@pattern`, `@asType integer`. A type is a closed
+object (`additionalProperties: false`) unless `types: { additionalProperties:
+true }` is passed. The type must be named (an interface or a type alias, in
+the file or imported with `import type`); an inline type literal, a name the
+checker does not find, or a call with a value argument stops the build with a
+message naming the file and line. Without the plugin, `schemaOf()` throws at
+run time: it has no run-time form, and a loud error beats an empty schema.
+
+This needs `ts-json-schema-generator` and `typescript`, optional peer
+dependencies of the plugin (`npm install -D ts-json-schema-generator
+typescript`), and ata-validator 1.61.0 for the `schemaOf` export. The nearest
+`tsconfig.json` above the file is used, or `types: { tsconfig }`. Reading a
+project of eight source files took 267 ms once per build and 13 ms per type,
+on TypeScript 7.0.2; the generator is loaded only when a file names the call.
+
+What this is not: a validator generated from a type for its own sake (typia
+does that, for every runtime, without a schema in between). Here the type is
+one way to write the JSON Schema, and the schema is what ata compiles,
+publishes and validates with, everywhere ata runs.
+
 ### Handed to a router or a form library: `body: check`
 
 A validator handed over as a value, an argument of a call directly or inside

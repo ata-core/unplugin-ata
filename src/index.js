@@ -70,6 +70,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // every replaceable call together saves more than it costs.
       session.sharedDecision = undefined
       clearSizes()
+      session.typeSchemas.reset()
       session.scanned = null
       if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
         const api = await session.api()
@@ -117,8 +118,11 @@ export const unpluginFactory = (userOptions = {}) => {
       }
       const file = id.split('?')[0]
       const scanned = session.sharedDecision !== undefined && session.scanned && session.scanned.has(path.resolve(file))
+      // `schemaOf<T>()` needs the TypeScript checker, loaded once here; the
+      // generator is only looked for in a file that names the call.
+      if (code.includes('schemaOf')) await session.typeSchemas.ready()
       const kept = []
-      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors , kept })
+      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kept })
       return out ? { code: out.code, map: out.map } : null
     },
