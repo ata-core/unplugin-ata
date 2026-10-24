@@ -34,6 +34,17 @@
 //     applyDefaults where the schema has a default, which the compiled resolver
 //     calls first, as the runtime fills defaults. The resolver then answers as
 //     ataResolver does; the resolvers' own tests hold the two to each other.
+//
+// `<Form schema={schema} validator={validator} />`, where `validator` is the
+// default import of @rjsf/validator-ata and Form comes from an rjsf form
+// package, gets a precompiled validator for that schema the same way, written
+// by rjsf's own compileSchemaValidatorsCode from the installed copy:
+//   - the element has no spread attributes, and `schema` is a value the build
+//     can read, as above;
+//   - the schema has no `default`: the runtime validator fills defaults into
+//     the data and a precompiled module does not, so the two would disagree on
+//     a field left empty that has one.
+// rjsf's tests hold the precompiled validator to the runtime one.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -137,7 +148,9 @@ function readOnlyUse(r, ctx, seen) {
   let up = r.parent
   for (;;) {
     if (!up) return false
-    if (up.type === 'ObjectProperty') {
+    if (up.type === 'JSXExpressionContainer') {
+      return ctx.rjsfSchemaAttrs !== undefined && ctx.rjsfSchemaAttrs.has(up)
+    } else if (up.type === 'ObjectProperty') {
       if (up.value !== node) return false
     } else if (up.type === 'NewExpression' || up.type === 'CallExpression') {
       if (!up.arguments.includes(node)) return false
@@ -453,6 +466,8 @@ function inlineModule(src, index, verdict, names) {
 }
 
 const RESOLVERS = '@hookform/resolvers/ata-validator'
+// rjsf's form packages: core and the themes.
+const RJSF_FORMS = /^@rjsf\/(core|mui|antd|chakra-ui|fluentui-rc|semantic-ui|daisyui|shadcn|primereact|react-bootstrap|mantine)$/
 
 // The resolver's options as source for ataCompiledResolver's second argument:
 // '' for none, the literal's text for `{ raw: <boolean> }`, NOT_STATIC for
@@ -493,7 +508,7 @@ export function compileAway(code, id, ata, options) {
   const collect = options && Array.isArray(options.collect) ? options.collect : null
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
-  if (!code.includes('ata-validator')) return null
+  if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
   // The scan keeps the tree it parsed for the transform, which takes it and
   // lets it go, so a long dev session holds no old versions of a file.
   let ast = asts.get(code)
@@ -535,7 +550,28 @@ export function compileAway(code, id, ata, options) {
       }
     }
   }
-  if (!validatorName && !resolverName) return null
+  // rjsf: the default import of @rjsf/validator-ata, and the form components
+  // of rjsf's packages (the default export, or `Form` by name).
+  let rjsfName = null
+  let rjsfImport = null
+  const formNames = new Set()
+  const rjsfCompile = ata.rjsfCompiler ? ata.rjsfCompiler(id) : null
+  if (rjsfCompile) {
+    for (const stmt of ast.program.body) {
+      if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type') continue
+      const from = stmt.source.value
+      if (from === '@rjsf/validator-ata') {
+        for (const sp of stmt.specifiers) if (sp.type === 'ImportDefaultSpecifier') { rjsfName = sp.local.name; rjsfImport = stmt }
+      } else if (RJSF_FORMS.test(from)) {
+        for (const sp of stmt.specifiers) {
+          if (sp.type === 'ImportDefaultSpecifier') formNames.add(sp.local.name)
+          else if (sp.type === 'ImportSpecifier' && sp.importKind !== 'type' && (sp.imported.type === 'Identifier' ? sp.imported.name : sp.imported.value) === 'Form') formNames.add(sp.local.name)
+        }
+      }
+    }
+    if (formNames.size === 0) rjsfName = null
+  }
+  if (!validatorName && !resolverName && !rjsfName) return null
   let tName = null
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== 'ata-validator/t' || stmt.importKind === 'type') continue
@@ -558,9 +594,33 @@ export function compileAway(code, id, ata, options) {
   const { declared, refs } = scan(ast)
   if (validatorName && declared.get(validatorName) !== 1) validatorName = null
   if (resolverName && declared.get(resolverName) !== 1) resolverName = null
-  if (!validatorName && !resolverName) return null
+  if (rjsfName && declared.get(rjsfName) !== 1) rjsfName = null
+  if (!validatorName && !resolverName && !rjsfName) return null
   const consumers = new Set([validatorName, resolverName].filter(Boolean))
-  const ctx = { declared, refs, consumers, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
+  // The rjsf forms that can take a precompiled validator: `validator={<the
+  // import>}` and `schema={...}` on an rjsf form element without spread
+  // attributes. Their schema attributes count as reading the schema: rjsf does
+  // not change the schema it is given.
+  const forms = []
+  const rjsfSchemaAttrs = new Set()
+  if (rjsfName) {
+    for (const r of refs) {
+      if (r.node.name !== rjsfName) continue
+      const container = r.parent
+      const attr = container && container.type === 'JSXExpressionContainer' ? container.__parent : null
+      if (!attr || attr.type !== 'JSXAttribute' || attr.name.type !== 'JSXIdentifier' || attr.name.name !== 'validator') continue
+      const el = attr.__parent
+      if (!el || el.type !== 'JSXOpeningElement' || el.name.type !== 'JSXIdentifier' || !formNames.has(el.name.name) || declared.get(el.name.name) !== 1) continue
+      if (el.attributes.some((a) => a.type === 'JSXSpreadAttribute')) continue
+      const schemaAttrs = el.attributes.filter((a) => a.name.type === 'JSXIdentifier' && a.name.name === 'schema')
+      if (schemaAttrs.length !== 1 || !schemaAttrs[0].value || schemaAttrs[0].value.type !== 'JSXExpressionContainer') continue
+      const schemaAttr = schemaAttrs[0].value
+      if (schemaAttr.expression.type === 'JSXEmptyExpression') continue
+      forms.push({ container, schemaAttr })
+      rjsfSchemaAttrs.add(schemaAttr)
+    }
+  }
+  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
   const modules = []
@@ -589,6 +649,21 @@ export function compileAway(code, id, ata, options) {
       resolverCalls.add(call)
       done.add(call)
     }
+  }
+  const rjsfDone = []
+  for (const { container, schemaAttr } of forms) {
+    const schema = staticValue(schemaAttr.expression, ctx)
+    if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
+    const text = JSON.stringify(schema)
+    if (text.includes('"default"')) continue
+    let src = null
+    try { src = rjsfCompile(schema) } catch { src = null }
+    if (typeof src !== 'string' || !src.includes('module.exports')) continue
+    const index = modules.length
+    modules.push(`const __ataCompiled${index} = /*#__PURE__*/ (() => {\nconst module = { exports: {} };\n${src}\nreturn module.exports;\n})();\nconst __ataRjsf${index} = /*#__PURE__*/ __ataCreatePrecompiledValidator(__ataCompiled${index}, JSON.parse(${JSON.stringify(text)}));\n`)
+    s.overwrite(container.expression.start, container.expression.end, `__ataRjsf${index}`)
+    rjsfDone.push(container.expression)
+    done.add(container.expression)
   }
   for (const r of refs) {
     if (!validatorName || r.node.name !== validatorName) continue
@@ -646,6 +721,18 @@ export function compileAway(code, id, ata, options) {
   }
   if (importDecl) prune(importDecl, [validatorName, defineSchema].filter(Boolean))
   if (resolverImport && resolverCalls.size) prune(resolverImport, [resolverName])
+  // The default import of @rjsf/validator-ata goes when no use of it is left,
+  // and with it the runtime validator.
+  if (rjsfImport && rjsfDone.length) {
+    if (!refs.some((r) => r.node.name === rjsfName && !inReplaced(r.node))) {
+      if (rjsfImport.specifiers.length === 1) s.remove(rjsfImport.start, rjsfImport.end)
+      else {
+        const named = rjsfImport.specifiers.filter((sp) => sp.type === 'ImportSpecifier').map((sp) => code.slice(sp.start, sp.end))
+        s.overwrite(rjsfImport.start, rjsfImport.end, named.length ? `import { ${named.join(', ')} } from ${code.slice(rjsfImport.source.start, rjsfImport.source.end)}` : '')
+      }
+    }
+    s.prepend(`import __ataCreatePrecompiledValidator from '@rjsf/validator-ata/lib/createPrecompiledValidator.js';\n`)
+  }
   // The builder calls read here are pure, and marked so: a schema constant
   // only the replaced call used, and the builder with it, can then leave the
   // bundle.

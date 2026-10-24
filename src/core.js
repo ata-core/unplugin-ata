@@ -148,9 +148,51 @@ async function loadAta() {
     }
     return has
   }
+  // rjsf's own module writer from the @rjsf/validator-ata a file resolves to,
+  // once per copy, or null: from 6.11.0, which has createPrecompiledValidator
+  // under lib/ (an import that leaves the runtime validator out of the bundle),
+  // and only where the ata-validator it compiles with writes its errors in the
+  // runtime's order (bundleStandalone `order`, ata-validator 1.59.0), which the
+  // form shows in its error list. The writer returned asks for that order.
+  const rjsfCopies = new Map()
+  const rjsfCompiler = (file) => {
+    if (!canCompileAway) return null
+    let entry
+    try { entry = createRequire(file).resolve('@rjsf/validator-ata/compileSchemaValidators') } catch { return null }
+    let compile = rjsfCopies.get(entry)
+    if (compile === undefined) {
+      compile = null
+      try {
+        const req = createRequire(file)
+        // The import the rewrite adds, as a bundler resolves it (the `import`
+        // condition: lib/, beside dist/ where this resolved).
+        const lib = path.join(path.dirname(entry), '..', 'lib', 'createPrecompiledValidator.js')
+        if (!readFileSync(lib, 'utf8').includes('export default')) throw new Error('no ESM createPrecompiledValidator')
+        const fn = req('@rjsf/validator-ata/compileSchemaValidators').compileSchemaValidatorsCode
+        // rjsf passes its own options to bundleStandalone, and before 6.12 none
+        // of the caller's: `order` is added on the ata-validator copy rjsf
+        // loads, for the length of the call.
+        const { Validator: RjsfValidator } = createRequire(entry)('ata-validator')
+        const ordered = (schema) => {
+          const own = Object.getOwnPropertyDescriptor(RjsfValidator, 'bundleStandalone')
+          const bundle = RjsfValidator.bundleStandalone
+          RjsfValidator.bundleStandalone = function (schemas, opts) { return bundle.call(this, schemas, { ...opts, order: true }) }
+          try { return fn(schema) } finally {
+            if (own) Object.defineProperty(RjsfValidator, 'bundleStandalone', own)
+            else delete RjsfValidator.bundleStandalone
+          }
+        }
+        const probe = typeof fn === 'function' ? ordered({ type: 'object', properties: { a: { type: 'string', minLength: 2 } }, additionalProperties: false }) : ''
+        if (/function _cpLen\(/.test(probe) && /function _ataOrder\(/.test(probe) && probe.includes('module.exports')) compile = ordered
+      } catch { compile = null }
+      rjsfCopies.set(entry, compile)
+    }
+    return compile
+  }
   return {
     ...api,
     compiledResolver,
+    rjsfCompiler,
     compiledSharedErrors,
     toStandaloneModule: build.toStandaloneModule,
     compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,

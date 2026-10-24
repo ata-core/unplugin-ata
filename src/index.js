@@ -104,7 +104,7 @@ export const unpluginFactory = (userOptions = {}) => {
     },
 
     async transform(code, id) {
-      if (!code.includes('ata-validator')) return null
+      if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
       const api = await session.api()
       if (!api.compiledModuleFor) {
         // Only a caller who asked for it hears that it could not happen; on
