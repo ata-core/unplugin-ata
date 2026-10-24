@@ -282,15 +282,15 @@ export const Signup = () => <Form schema={schema} validator={validator} />
 For a six-field signup form with React 19 and rjsf 6.11.0, the first load of a
 minified esbuild build went from 207.8 KB to 159.4 KB gzipped (ata-validator
 master after 1.58.1). On two schemas with `$ref`, `oneOf`, `anyOf`,
-`dependencies` and formats, 6000 generated documents gave the same errors from
-both validators, in the same order, and 400 server renders the same markup.
+`dependencies`, formats and defaults, 6000 generated documents gave the same
+errors from both validators, in the same order, left the form's data the same,
+and 400 server renders gave the same markup.
 
-The element is rewritten only when it has no spread attributes and its schema
-has no `default`: rjsf's runtime validator fills defaults into the data and a
-precompiled module does not, so the two would disagree on an empty field that
-has one. The module is written in the runtime's error order, which rjsf shows
-in its error list. That needs ata-validator 1.59.0; with an older one the form
-stays on the runtime validator. Importing `createPrecompiledValidator` leaves
+The element is rewritten when it has no spread attributes. The module is
+written in the runtime's error order, which rjsf shows in its error list, and
+fills defaults before the check, on a copy of the form's data, as rjsf's
+runtime validator does. That needs ata-validator 1.59.0; with an older one the
+form stays on the runtime validator. Importing `createPrecompiledValidator` leaves
 the runtime validator out of the bundle from @rjsf/validator-ata 6.11.0. Once
 no other use of `validator` is left, its import goes too.
 

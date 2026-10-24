@@ -1,7 +1,8 @@
 // compileAway for rjsf: `<Form schema={schema} validator={validator} />`, with
 // `validator` the default import of @rjsf/validator-ata and a schema the build
 // can read, gets a precompiled validator written by rjsf's own
-// compileSchemaValidatorsCode, in the runtime's error order. The rjsf packages
+// compileSchemaValidatorsCode, in the runtime's error order, filling defaults
+// before the check as the runtime does. The rjsf packages
 // here are stand-ins written by the test, the shape of the real ones: the
 // module writer calls ata-validator's bundleStandalone as rjsf does, and
 // createPrecompiledValidator hands back what it was given, so the test can run
@@ -28,7 +29,7 @@ const { Validator } = createRequire(path.join(ataDir, 'index.js'))('./index.js')
 const ordered = (() => {
   try { return /function _ataOrder\(/.test(Validator.bundleStandalone([{ type: 'object', additionalProperties: false }], { order: true })) } catch { return false }
 })()
-const needsOrder = ordered ? false : 'needs an ata-validator whose bundleStandalone takes order (1.59.0)'
+const needsOrder = ordered ? false : 'needs an ata-validator whose bundleStandalone takes order and useDefaults (1.59.0)'
 
 let dir
 let ata
@@ -114,6 +115,23 @@ describe('rjsf form validators compiled away', () => {
     }
   })
 
+  it('fills defaults as the runtime does, on a copy of the form data', { skip: needsOrder }, async () => {
+    const schema = "{ type: 'object', required: ['plan', 'name'], properties: { name: { type: 'string', minLength: 2 }, plan: { type: 'string', enum: ['free', 'pro'], default: 'free' }, seats: { type: 'integer', default: 1, minimum: 1 } } }"
+    const { out, file } = rewrite(ENTRY({ schema: 'formSchema', before: `const formSchema = ${schema}` }))
+    assert.ok(out && out.code.includes('__ataRjsf0'), 'rewritten')
+    const mod = await run(out.code, file)
+    const { fns } = mod.el.props.validator
+    const runtime = new Validator(mod.el.props.schema, { verbose: true })
+    for (const d of [{ name: 'Al' }, {}, { name: 'A', seats: 0 }, { name: 'Al', plan: 'gold' }]) {
+      // rjsf's runtime validator checks a copy (cloneForValidation): the form's data stays as it was.
+      const b = structuredClone(d)
+      const ra = runtime.validate(structuredClone(d)), rb = fns.root(b)
+      assert.deepEqual(b, d, `the form's data is not changed: ${JSON.stringify(d)}`)
+      assert.equal(JSON.stringify(rb.errors.map((e) => e.schemaPath)), JSON.stringify(ra.errors.map((e) => e.schemaPath)), JSON.stringify(d))
+      assert.equal(rb.valid, ra.valid)
+    }
+  })
+
   it('reads a schema imported from another module', { skip: needsOrder }, async () => {
     await fs.writeFile(path.join(dir, 'schemas.mjs'), `export const Signup = ${SCHEMA}\n`)
     const code = `import Form from '@rjsf/core'
@@ -134,7 +152,6 @@ export const el = <Form schema={Signup} validator={validator} />
 
   for (const [name, opts] of [
     ['a spread attribute', { attrs: ' {...rest}', before: 'const rest = {}' }],
-    ['a schema with a default, which the runtime fills and a module does not', { schema: "{ type: 'object', properties: { a: { type: 'string', default: 'x' } } }" }],
     ['a component that is not an rjsf form', { tag: 'MyForm', imports: 'function MyForm() {}' }],
     ['a schema changed after it is written', { before: "schema.required = ['age']" }],
     ['a schema the build cannot read', { schema: 'makeSchema()', before: 'function makeSchema() { return {} }' }],

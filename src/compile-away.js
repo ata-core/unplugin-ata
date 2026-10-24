@@ -41,9 +41,8 @@
 // by rjsf's own compileSchemaValidatorsCode from the installed copy:
 //   - the element has no spread attributes, and `schema` is a value the build
 //     can read, as above;
-//   - the schema has no `default`: the runtime validator fills defaults into
-//     the data and a precompiled module does not, so the two would disagree on
-//     a field left empty that has one.
+//   - the module is written in the runtime's error order and fills defaults
+//     before the check, as rjsf's runtime validator does (core.js rjsfCompiler).
 // rjsf's tests hold the precompiled validator to the runtime one.
 
 import fs from 'node:fs'
@@ -655,12 +654,15 @@ export function compileAway(code, id, ata, options) {
     const schema = staticValue(schemaAttr.expression, ctx)
     if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
     const text = JSON.stringify(schema)
-    if (text.includes('"default"')) continue
     let src = null
     try { src = rjsfCompile(schema) } catch { src = null }
     if (typeof src !== 'string' || !src.includes('module.exports')) continue
     const index = modules.length
-    modules.push(`const __ataCompiled${index} = /*#__PURE__*/ (() => {\nconst module = { exports: {} };\n${src}\nreturn module.exports;\n})();\nconst __ataRjsf${index} = /*#__PURE__*/ __ataCreatePrecompiledValidator(__ataCompiled${index}, JSON.parse(${JSON.stringify(text)}));\n`)
+    // rjsf's runtime validator checks a copy of the form data
+    // (cloneForValidation), so filling defaults never touches the form's own
+    // object; each function here gets a copy the same way, keeping the
+    // `errors` rjsf reads off it.
+    modules.push(`const __ataCompiled${index} = /*#__PURE__*/ (() => {\nconst module = { exports: {} };\n${src}\nconst fns = module.exports;\nfor (const key of Object.keys(fns)) {\n  const fn = fns[key];\n  const copy = function (data) { const r = fn(data !== null && typeof data === 'object' ? structuredClone(data) : data); copy.errors = fn.errors; return r };\n  fns[key] = copy;\n}\nreturn fns;\n})();\nconst __ataRjsf${index} = /*#__PURE__*/ __ataCreatePrecompiledValidator(__ataCompiled${index}, JSON.parse(${JSON.stringify(text)}));\n`)
     s.overwrite(container.expression.start, container.expression.end, `__ataRjsf${index}`)
     rjsfDone.push(container.expression)
     done.add(container.expression)
