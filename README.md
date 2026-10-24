@@ -330,7 +330,9 @@ new Elysia().post('/signup', ({ body }) => body, { body: signup })
 For the Elysia app above, built with `Bun.build` on Bun 1.4.0, the bundle went
 from 940 KB to 441 KB, the process from 26.3 to 18.0 ms and its first two
 requests from 8.1 to 4.3 ms (medians of 21 runs); the `new Function` calls
-left in the bundle are Elysia's own.
+left in the bundle are Elysia's own. The same route on Hono 4 with
+`sValidator('json', signup)` from `@hono/standard-validator`: 573 KB to 74 KB,
+17.3 to 9.1 ms, 5.3 to 1.5 ms, and no `new Function` left at all.
 
 What the consumer does with the value is not read: it gets `validate()`,
 `isValidObject()`, `validateJSON()`, `isValidJSON()` and `~standard`, and
