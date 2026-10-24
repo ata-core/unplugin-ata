@@ -47,9 +47,12 @@ function resolverExportsAll (entry, name) {
 
 // `schemaOf<T>()`: the JSON Schema of a TypeScript type, read by the
 // TypeScript checker through ts-json-schema-generator, both optional
-// dependencies of this plugin. One generator per tsconfig (the nearest one
-// above the file, else the file alone), kept for the build; the plugin
-// resets it at build start so a type edited in watch mode is read again.
+// dependencies of this plugin. One generator per file that calls it, over
+// that file and what it imports, with the compiler options of the nearest
+// tsconfig.json above it (a program over the whole tsconfig would see every
+// type of the project, and two types of one name in different files would
+// be read as one); kept for the build, reset at build start so a type edited
+// in watch mode is read again.
 // JSDoc tags on the properties carry what a type cannot say (@format,
 // @minimum, @pattern, @minLength, @maxItems, @asType integer). A type is a
 // closed object unless the options say otherwise.
@@ -89,11 +92,10 @@ function createTypeSchemas (options = {}) {
       const key = file + '\0' + typeName
       if (cache.has(key)) return cache.get(key)
       const tsconfig = tsconfigFor(file)
-      const gkey = tsconfig || path.resolve(file)
+      const gkey = path.resolve(file)
       let gen = generators.get(gkey)
       if (!gen) {
-        // Without a tsconfig the program is the file and what it imports.
-        gen = mod.createGenerator({ path: tsconfig ? undefined : path.resolve(file), tsconfig: tsconfig || undefined, type: '*', expose: 'none', topRef: false, skipTypeCheck: true, additionalProperties: options.additionalProperties === true, jsDoc: 'extended', ...(options.generator || {}) })
+        gen = mod.createGenerator({ path: gkey, tsconfig: tsconfig || undefined, type: '*', expose: 'none', topRef: false, skipTypeCheck: true, additionalProperties: options.additionalProperties === true, jsDoc: 'extended', ...(options.generator || {}) })
         generators.set(gkey, gen)
       }
       let schema

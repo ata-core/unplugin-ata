@@ -345,10 +345,13 @@ run time: it has no run-time form, and a loud error beats an empty schema.
 
 This needs `ts-json-schema-generator` and `typescript`, optional peer
 dependencies of the plugin (`npm install -D ts-json-schema-generator
-typescript`), and ata-validator 1.61.0 for the `schemaOf` export. The nearest
-`tsconfig.json` above the file is used, or `types: { tsconfig }`. Reading a
-project of eight source files took 267 ms once per build and 13 ms per type,
-on TypeScript 7.0.2; the generator is loaded only when a file names the call.
+typescript`), and ata-validator 1.61.0 for the `schemaOf` export. The program is
+the calling file and what it imports, with the compiler options of the
+nearest `tsconfig.json` above it (or `types: { tsconfig }`), so a type is
+always the one that file sees. Building that program took 120 to 270 ms per
+file that calls `schemaOf`, once per build, and about 5 ms per type, on
+TypeScript 5.9 and 7.0; the generator is loaded only when a file names the
+call.
 
 What this is not: a validator generated from a type for its own sake (typia
 does that, for every runtime, without a schema in between). Here the type is
