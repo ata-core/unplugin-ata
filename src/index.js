@@ -142,6 +142,17 @@ export const unpluginFactory = (userOptions = {}) => {
       },
     },
 
+    // Bun.build: the `root` of its config when given, else the working
+    // directory. The same plugin runs under `bun build --compile` through
+    // Bun.build({ compile }), where the compiled validators replace the
+    // runtime in the executable.
+    bun: {
+      setup(build) {
+        const root = build.config && build.config.root
+        if (!userOptions.root && root) session.root = root
+      },
+    },
+
     vite: {
       configResolved(config) {
         if (!userOptions.root) session.root = config.root || session.root

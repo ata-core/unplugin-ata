@@ -29,6 +29,10 @@
       "types": "./src/esbuild.d.ts",
       "default": "./src/esbuild.js"
     },
+    "./bun": {
+      "types": "./src/bun.d.ts",
+      "default": "./src/bun.js"
+    },
     "./rspack": {
       "types": "./src/rspack.d.ts",
       "default": "./src/rspack.js"
@@ -74,7 +78,7 @@
     "@babel/parser": "^7.29.9",
     "jiti": "^2.7.0",
     "magic-string": "^1.4.2",
-    "unplugin": "^3.3.0"
+    "unplugin": "^3.4.0"
   },
   "devDependencies": {
     "@ata-project/keywords": "^0.3.3",

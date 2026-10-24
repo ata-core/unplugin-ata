@@ -1,6 +1,6 @@
 # @ata-project/unplugin
 
-Compiles JSON Schema files into self-contained [ata-validator](https://ata-validator.com) modules at build time, with TypeScript declarations, in Vite, Webpack, Rollup, Rolldown, esbuild and Rspack. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
+Compiles JSON Schema files into self-contained [ata-validator](https://ata-validator.com) modules at build time, with TypeScript declarations, in Vite, Webpack, Rollup, Rolldown, esbuild, Rspack and Bun. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
 
 The generated module imports nothing. A small schema compiles to about 1.3 KB gzipped and a ten-field one to about 2.6 KB, full error detail included, on ata-validator 1.36.0; the module exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs.
 
@@ -79,6 +79,23 @@ module.exports = {
 }
 ```
 
+Bun:
+
+```js
+// build.ts
+import ata from '@ata-project/unplugin/bun'
+
+await Bun.build({
+  entrypoints: ['./src/index.ts'],
+  outdir: './dist',
+  plugins: [ata({ schemas: 'src/**/*.schema.json' })],
+})
+```
+
+The same call with `compile: { outfile: './app' }` writes an executable in
+which the compiled validators stand in for the runtime (`bun build --compile`
+on the command line takes no plugins, so the build goes through `Bun.build`).
+
 Rolldown:
 
 ```js
@@ -148,7 +165,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `abortEarly` | `false` | Emit the smaller validator that stops at the first failure. |
 | `types` | `true` | Emit a `.d.ts` next to each validator. |
 | `nameFromFile` | file name in PascalCase | Type name for schemas without `title` or `$id`. |
-| `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context` and esbuild's `absWorkingDir` are read; Rollup and Rolldown need it passed. |
+| `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context`, esbuild's `absWorkingDir` and Bun.build's `root` are read; Rollup and Rolldown need it passed. |
 | `alias` | Vite's `resolve.alias` | Import aliases inside `.ts` schema files. tsconfig `paths` work without configuration. |
 | `compileAway` | `true` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.36.0; with an older version the runtime stays, and a warning is printed only if you set the option yourself. |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what every replaceable call would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |

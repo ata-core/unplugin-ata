@@ -9,6 +9,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import childProcess from 'node:child_process'
 
 import unplugin from '../src/index.js'
 
@@ -22,6 +23,13 @@ async function cleanGenerated() {
   for (const f of await fs.readdir(dir)) {
     if (/\.schema\.(js|d\.ts)$/.test(f)) await fs.unlink(path.join(dir, f))
   }
+}
+
+function hasBun() {
+  try { return !!execFileSyncQuiet('bun', ['--version']) } catch { return false }
+}
+function execFileSyncQuiet(cmd, args) {
+  return childProcess.execFileSync(cmd, args, { stdio: 'pipe' }).toString()
 }
 
 async function outDir(name) {
@@ -148,8 +156,23 @@ describe('bundlers', () => {
     await check(path.join(dir, 'out.mjs'))
   })
 
+  // Bun.build, run by the installed `bun` when there is one. The same plugin
+  // is what Bun.build({ compile }) applies when it writes an executable.
+  it('bun', { skip: !hasBun() && 'bun is not installed' }, async () => {
+    await cleanGenerated()
+    const dir = await outDir('bun')
+    const script = `import ata from ${JSON.stringify(path.join(here, '..', 'src', 'bun.js'))}
+const r = await Bun.build({ entrypoints: [${JSON.stringify(entry)}], root: ${JSON.stringify(root)}, outdir: ${JSON.stringify(dir)}, target: 'node', format: 'esm', naming: 'out.mjs', plugins: [ata(${JSON.stringify(pluginOptions)})] })
+if (!r.success) { console.error(r.logs.map(String).join('\\n')); process.exit(1) }
+`
+    const file = path.join(dir, 'build.mjs')
+    await fs.writeFile(file, script)
+    childProcess.execFileSync('bun', [file], { stdio: 'pipe' })
+    await check(path.join(dir, 'out.mjs'))
+  })
+
   it('exposes one factory per bundler plus the raw form', () => {
-    for (const key of ['vite', 'rollup', 'rolldown', 'esbuild', 'webpack', 'rspack']) {
+    for (const key of ['vite', 'rollup', 'rolldown', 'esbuild', 'webpack', 'rspack', 'bun']) {
       assert.equal(typeof unplugin[key], 'function', key)
     }
     const vitePlugin = unplugin.vite(pluginOptions)
