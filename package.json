@@ -79,7 +79,7 @@
   "devDependencies": {
     "@ata-project/keywords": "^0.3.3",
     "@rspack/core": "^1.7.0",
-    "ata-validator": "^1.58.1",
+    "ata-validator": "^1.59.0",
     "esbuild": "^0.28.0",
     "rolldown": "^1.2.8",
     "rollup": "^4.60.0",

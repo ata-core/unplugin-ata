@@ -280,8 +280,8 @@ export const Signup = () => <Form schema={schema} validator={validator} />
 ```
 
 For a six-field signup form with React 19 and rjsf 6.11.0, the first load of a
-minified esbuild build went from 207.8 KB to 159.4 KB gzipped (ata-validator
-master after 1.58.1). On two schemas with `$ref`, `oneOf`, `anyOf`,
+minified esbuild build went from 207.8 KB to 159.5 KB gzipped (ata-validator
+1.59.0). On two schemas with `$ref`, `oneOf`, `anyOf`,
 `dependencies`, formats and defaults, 6000 generated documents gave the same
 errors from both validators, in the same order, left the form's data the same,
 and 400 server renders gave the same markup.
