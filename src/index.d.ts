@@ -31,6 +31,12 @@ export interface Options {
    */
   compileAway?: boolean
   /**
+   * At the end of the build, log how many validators compileAway compiled at
+   * build time and every `new Validator(...)` it kept on the runtime, with the
+   * file, the line and the reason. Default: `true`; `false` turns it off.
+   */
+  report?: boolean
+  /**
    * Where a replaced validator's error detail comes from. `'auto'` (default)
    * scans the project's sources at build start and writes modules compact
    * (their verdict and schema, with errors from `ata-validator/error-runtime`,

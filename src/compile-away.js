@@ -698,23 +698,30 @@ export function compileAway(code, id, ata, options) {
     rjsfDone.push(container.expression)
     done.add(container.expression)
   }
+  // Every `new Validator(...)` the file keeps on the runtime, with the reason,
+  // for the build's report: the one place a reader learns why the runtime is
+  // still in the bundle.
+  // Reported through `options.kept`, an array the caller passes; the return
+  // value stays null when nothing was replaced.
+  const kept = options && Array.isArray(options.kept) ? options.kept : []
+  const keep = (expr, reason) => kept.push({ line: expr.loc ? expr.loc.start.line : null, reason })
   for (const r of refs) {
     if (!validatorName || r.node.name !== validatorName) continue
     const expr = r.parent
     if (!expr || expr.type !== 'NewExpression' || r.key !== 'callee') continue
-    if (expr.arguments.length !== 1 && expr.arguments.length !== 2) continue
+    if (expr.arguments.length !== 1 && expr.arguments.length !== 2) { keep(expr, `the call has ${expr.arguments.length} arguments; one schema and at most one options object are replaced`); continue }
     let optionsArg = ''
     if (expr.arguments.length === 2) {
       optionsArg = compiledOptionsArg(expr.arguments[1], ctx, supportedOptions)
-      if (optionsArg === NOT_STATIC) continue
+      if (optionsArg === NOT_STATIC) { keep(expr, 'the options are not a literal the build can read, or name an option a compiled module cannot reproduce'); continue }
     }
     const binding = replaceableBinding(expr, ctx)
-    if (!binding) continue
+    if (!binding) { keep(expr, 'the validator is not a const used only through validate(), isValidObject(), validateJSON(), isValidJSON() or handed over as a value; a property read, an export, a return or a reassignment keeps the runtime'); continue }
     const schema = staticValue(expr.arguments[0], ctx)
-    if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
+    if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) { keep(expr, 'the schema is not a value the build can read: an object literal, a const bound to one, the default import of a relative .json file, or defineSchema(...) around one'); continue }
     let src = null
     try { src = compiledModuleFor(schema, { format: 'esm' }) } catch { src = null }
-    if (!src) continue
+    if (!src) { keep(expr, 'ata-validator declines to compile this schema standalone (a custom error message, or a shape its error generator cannot express exactly)'); continue }
     const index = modules.length
     const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
     // Code that never reads errors gets the verdict wrapper and no errors at

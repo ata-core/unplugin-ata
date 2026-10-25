@@ -117,8 +117,29 @@ export const unpluginFactory = (userOptions = {}) => {
       }
       const file = id.split('?')[0]
       const scanned = session.sharedDecision !== undefined && session.scanned && session.scanned.has(path.resolve(file))
-      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors })
+      const kept = []
+      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors , kept })
+      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kept })
       return out ? { code: out.code, map: out.map } : null
+    },
+
+    // The report: how many validators the build compiled away, and every
+    // `new Validator(...)` it had to keep on the runtime, with the file, the
+    // line and the reason. A kept call is the one thing that puts the runtime
+    // compiler back in the bundle, so it is said out loud, once per build.
+    // `report: false` turns it off.
+    buildEnd() {
+      if (userOptions.report === false || userOptions.compileAway === false) return
+      let replaced = 0
+      const kept = []
+      for (const [file, r] of session.report) {
+        replaced += r.replaced
+        for (const k of r.kept) kept.push(`${path.relative(session.root || process.cwd(), file)}:${k.line ?? '?'} ${k.reason}`)
+      }
+      session.report.clear()
+      if (replaced === 0 && kept.length === 0) return
+      session.logger?.info?.(`[unplugin-ata] compileAway: ${replaced} validator${replaced === 1 ? '' : 's'} compiled at build time${kept.length ? `, ${kept.length} kept on the runtime` : ', the runtime compiler is out of the bundle'}`)
+      for (const line of kept) session.logger?.warn?.(`[unplugin-ata] kept on the runtime: ${line}`)
     },
 
     // Where `schemas` globs resolve from. Vite says so in configResolved,

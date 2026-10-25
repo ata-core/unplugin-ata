@@ -480,6 +480,9 @@ export function createSession(userOptions = {}) {
     options,
     root: userOptions.root ?? process.cwd(),
     logger: null,
+    // Per file, what compileAway replaced and what it kept, for the report at
+    // the end of the build.
+    report: new Map(),
     async compileAll() {
       const api = await (apiPromise ??= loadAta())
       const files = await resolveSchemaFiles(options.schemas, session.root)
