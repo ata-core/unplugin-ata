@@ -202,7 +202,9 @@ export const unpluginFactory = (userOptions = {}) => {
         // compiler (ata-validator's 'jsc-aot' target: a closed object's keys
         // read once and compared in order), which is level with Bun's own
         // validate<T> there and costs a few ns on the JIT, where it is not used.
-        if (session.bunAot) {
+        // The form follows the executable, not the bunTarget option: a plain
+        // module in an aot executable takes it too.
+        if (session.bunAot || !!(compile && typeof compile === 'object' && compile.aot === true)) {
           const api = await session.api()
           if (api.bunTarget && typeof api.bunTarget.setTargetEngine === 'function') api.bunTarget.setTargetEngine('jsc-aot')
         }
