@@ -137,10 +137,16 @@ export const unpluginFactory = (userOptions = {}) => {
       // documents made from it, as `ata verify` does, and a disagreement fails
       // the build. `verify: true` checks 50 documents a schema, a number that
       // many; off by default, since it costs a build a few hundred ms a schema.
-      if (userOptions.verify && userOptions.compileAway !== false) {
+      // `verify` defaults to 'ci': the proof runs where it is cheap to wait
+      // for, under CI (the CI environment variable), and not on every local
+      // build. `true` or a number runs it everywhere, `false` never.
+      const verify = userOptions.verify === undefined || userOptions.verify === 'ci' ? (process.env.CI ? true : false) : userOptions.verify
+      if (verify && userOptions.compileAway !== false) {
         const api = await session.api()
-        await runVerify(session.verifying, api, userOptions.verify, session.logger)
+        if (api.verify) await runVerify(session.verifying, api, verify, session.logger)
+        else if (userOptions.verify !== undefined && userOptions.verify !== 'ci') throw new Error('[unplugin-ata] verify needs ata-validator 1.61.0 or later')
       }
+      session.verifying.clear()
       if (userOptions.report === false || userOptions.compileAway === false) return
       let replaced = 0
       const kept = []

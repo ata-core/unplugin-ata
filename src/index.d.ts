@@ -48,10 +48,12 @@ export interface Options {
   /**
    * At the end of the build, hold every validator compiled away against the
    * runtime on documents made from its schema (as `ata verify` does), and fail
-   * the build on a disagreement. `true` checks 50 documents a schema, a number
-   * that many. Off by default. Needs ata-validator 1.61.0.
+   * the build on a disagreement. `'ci'` (the default) runs it where the CI
+   * environment variable is set; `true` everywhere, a number that many
+   * documents a schema (50 for `true`), `false` never. Needs ata-validator
+   * 1.61.0; with an older one the default does nothing.
    */
-  verify?: boolean | number
+  verify?: boolean | number | 'ci'
   /**
    * Where a replaced validator's error detail comes from. `'auto'` (default)
    * scans the project's sources at build start and writes modules compact
