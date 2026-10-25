@@ -7,10 +7,10 @@
 // esbuild has no watch hook in unplugin, so under `esbuild --watch` schemas
 // compile on each build start but a schema edit alone does not trigger one.
 
+import fs from 'node:fs'
 import path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { createSession, normalizeAlias, compile, __internal } from './core.js'
-import fs from 'node:fs'
 import { compileAway, sharedErrorsPay, clearSizes } from './compile-away.js'
 
 const SOURCE = /\.[cm]?[jt]sx?$/
@@ -196,7 +196,28 @@ export const unpluginFactory = (userOptions = {}) => {
         // which only an aot build can honour.
         const compile = build.config && build.config.compile
         session.bunAot = userOptions.bunTarget === true || (userOptions.bunTarget !== false && !!(compile && typeof compile === 'object' && compile.aot === true))
+        // The glob compile writes the Bun target beside each module too.
+        session.options.bunTarget = session.bunAot
       },
+    },
+
+    // Under a Bun build compiled ahead of time, an import of a module the
+    // plugin compiled from a schema goes to the `.bun.ts` written beside it,
+    // which checks the schema's rules through Bun's compiler and exports the
+    // same names (validate, isValid, the default) plus the type and parse().
+    resolveId(id, importer) {
+      if (!session.bunAot || !importer || !id.startsWith('.')) return null
+      // The .bun.ts imports the module beside it by that name; sending that
+      // import back to itself would make it its own fallback.
+      if (/\.bun\.ts$/.test(importer.split('?')[0])) return null
+      const abs = path.resolve(path.dirname(importer.split('?')[0]), id)
+      for (const f of [abs, abs + '.js', abs + '.mjs', abs + '.cjs']) {
+        if (!/\.(m?js|cjs)$/.test(f) || !fs.existsSync(f)) continue
+        const bun = f.replace(/\.(m?js|cjs)$/, '.bun.ts')
+        if (fs.existsSync(bun)) return { id: bun }
+        return null
+      }
+      return null
     },
 
     vite: {

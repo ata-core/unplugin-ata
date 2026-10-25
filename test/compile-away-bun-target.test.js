@@ -97,4 +97,38 @@ if (!r.success) { console.error(r.logs.map((l) => l.message).join('\\n')); proce
     assert.equal(errors, '[[],["minimum"],["format"],["additionalProperties"],["type"]]')
     await fs.rm(dir, { recursive: true, force: true })
   })
+
+  it('writes the Bun target beside a glob-compiled schema and sends its import there', { skip: bun ? false : 'set BUN_AOT to a Bun with --aot' }, async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unplugin-ata-bun-glob-'))
+    const plugin = path.resolve(here, '..', 'src', 'bun.js')
+    await fs.mkdir(path.join(dir, 'schemas'))
+    await fs.writeFile(path.join(dir, 'schemas', 'user.schema.json'), JSON.stringify({ type: 'object', required: ['id', 'mail'], additionalProperties: false, properties: { id: { type: 'integer', minimum: 1 }, mail: { type: 'string', format: 'email' } } }))
+    await fs.writeFile(path.join(dir, 'main.ts'), `import validate, { isValid, parse } from './schemas/user.schema'
+const docs: unknown[] = [{ id: 1, mail: 'a@b.co' }, { id: 0, mail: 'a@b.co' }, { id: 2, mail: 'nope' }, { id: 2, mail: 'a@b.co', x: 1 }]
+console.log(JSON.stringify(docs.map((d) => isValid(d))))
+console.log(JSON.stringify(docs.map((d) => validate(d).errors.map((e: any) => e.keyword))))
+console.log(JSON.stringify([parse('{"id":3,"mail":"c@d.ee"}'), parse('{"id":"3"}'), parse('nope')]))
+`)
+    await fs.writeFile(path.join(dir, 'build.ts'), `import ata from ${JSON.stringify(plugin)}
+const r = await Bun.build({ entrypoints: ['./main.ts'], compile: { outfile: './main', aot: true }, plugins: [ata({ schemas: 'schemas/**/*.schema.json', root: ${JSON.stringify(dir)} })], root: ${JSON.stringify(dir)} })
+if (!r.success) { console.error(r.logs.map((l) => l.message).join('\\n')); process.exit(1) }
+`)
+    await fs.mkdir(path.join(dir, 'node_modules'), { recursive: true })
+    await fs.symlink(path.resolve(here, '..', 'node_modules', 'ata-validator'), path.join(dir, 'node_modules', 'ata-validator'))
+    const b = spawnSync(bun, ['build.ts'], { cwd: dir, encoding: 'utf8' })
+    assert.equal(b.status, 0, b.stdout + b.stderr)
+    const files = (await fs.readdir(path.join(dir, 'schemas'))).sort()
+    assert.deepEqual(files, ['user.schema.bun.ts', 'user.schema.d.ts', 'user.schema.js', 'user.schema.json', 'user.schema.rest.js'])
+    const bunSrc = await fs.readFile(path.join(dir, 'schemas', 'user.schema.bun.ts'), 'utf8')
+    assert.ok(bunSrc.includes('export default validate'), 'the same default as the module')
+    assert.ok(bunSrc.includes('"./user.schema.rest.js"'), 'the residual (format: email) beside it')
+    const r = spawnSync(path.join(dir, 'main'), [], { cwd: dir, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    const [verdicts, errors, parsed] = r.stdout.trim().split('\n')
+    assert.equal(verdicts, '[true,false,false,false]')
+    assert.equal(errors, '[[],["minimum"],["format"],["additionalProperties"]]')
+    // parse() exists only on the Bun target, so its presence shows the import went there.
+    assert.equal(parsed, '[{"id":3,"mail":"c@d.ee"},null,null]')
+    await fs.rm(dir, { recursive: true, force: true })
+  })
 })

@@ -429,7 +429,13 @@ compiler's pull request build; on a three-field schema whose e-mail format the
 second module checks, 34 to 33. The plain module alone is already written for
 JavaScriptCore when the plugin runs under Bun (65 to 53 ns on that order over
 a module built on Node). `bunTarget: false` keeps the plain module; a
-JavaScript file keeps it too, since the type needs TypeScript.
+JavaScript file keeps it too, since the type needs TypeScript. A schema
+compiled from the `schemas` globs gets the same: the plugin writes
+`x.schema.bun.ts` (and `x.schema.rest.js` for the rules a type cannot carry)
+beside `x.schema.js`, and under the ahead-of-time build an import of the
+module is sent to the `.bun.ts`, which exports the same names, the type, and
+`parse(text)`, Bun's `JSON.parse<T>()` with the residual and the module
+behind it. The generated `.d.ts` declares `parse` in that build.
 
 `verify` adds the proof: at the end of the build every validator the plugin
 compiled away is held against a runtime `Validator` built from the same schema
