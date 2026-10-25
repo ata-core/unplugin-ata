@@ -499,6 +499,30 @@ export async function sharedErrorsPay(sources, ata) {
   return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 
+// The Bun target for one replaced call: the type ata-validator writes for the
+// schema (with Bun's Schema tags), the residual schema's module where the type
+// does not carry every rule, and a module object whose isValid asks Bun's
+// validate<T>() first, then the residual, and falls back to the plain module
+// wherever the type refuses, so every answer is the plain module's. Returns
+// the name of that object, or null when the split cannot be made (the plain
+// module then stands alone, as everywhere else).
+function bunTargetFor(schema, index, api, compiledModuleFor, decls, modules) {
+  let mapped
+  try { mapped = api.schemaToBunType(schema, { name: `__AtaT${index}`, aliasPrefix: `__AtaD${index}_` }) } catch { return null }
+  let rest = null
+  if (mapped.residual !== null) {
+    let restSrc = null
+    try { restSrc = compiledModuleFor(mapped.residual, { format: 'esm' }) } catch { restSrc = null }
+    if (!restSrc) return null
+    rest = `__ataRest${index}`
+    modules.push(inlineModule(restSrc, `Rest${index}`, true).replace(`__ataCompiledRest${index}`, rest))
+  }
+  for (const [n, src] of mapped.aliases) decls.push(`type ${n} = ${src};\n`)
+  decls.push(`type ${mapped.name} = ${mapped.type};\n`)
+  decls.push(`const __ataFast${index} = { ...__ataCompiled${index}, isValid: (d: unknown): boolean => { try { __ataCheck<${mapped.name}>(d) } catch { return __ataCompiled${index}.isValid(d) } return ${rest ? `${rest}.isValid(d)` : 'true'} } };\n`)
+  return `__ataFast${index}`
+}
+
 function inlineModule(src, index, verdict, names) {
   const body = src.replace(RUNTIME_IMPORT, '').split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
   return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${names || (verdict ? '{ isValid }' : '{ validate, isValid }')};\n})();\n`
@@ -546,6 +570,12 @@ export function compileAway(code, id, ata, options) {
   const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
   const collect = options && Array.isArray(options.collect) ? options.collect : null
   const typeSchema = options && typeof options.typeSchema === 'function' ? options.typeSchema : null
+  // The Bun target (ata-validator's bunTarget API) when the build is a Bun
+  // executable compiled ahead of time and the file is TypeScript: the
+  // schema's rules become a type Bun's compiler checks in machine code, with
+  // the residual module and the plain module behind it. See bunTargetFor.
+  const bunTarget = options && options.bunTarget && /\.[cm]?tsx?$/.test(id.split('?')[0]) ? options.bunTarget : null
+  const bunDecls = []
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
@@ -753,6 +783,9 @@ export function compileAway(code, id, ata, options) {
     if (!src) { keep(expr, 'ata-validator declines to compile this schema standalone (a custom error message, or a shape its error generator cannot express exactly)'); continue }
     const index = modules.length
     const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
+    // `verify` holds the self-contained module against the runtime; a compact
+    // module shares its verdict function with it and imports the runtime.
+    if (options && options.verifying instanceof Map) options.verifying.set(`${id}:${expr.loc ? expr.loc.start.line : '?'}`, { schema, src })
     // Code that never reads errors gets the verdict wrapper and no errors at
     // all, so a compact module would only add the runtime.
     const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
@@ -760,7 +793,10 @@ export function compileAway(code, id, ata, options) {
     modules.push(inlineModule(src, index, verdict))
     const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else wrappers.full = true
-    s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
+    // The wrappers answer verdicts through the module's isValid and read its
+    // validate only on a refusal, so the Bun target replaces isValid alone.
+    const fast = bunTarget ? bunTargetFor(schema, index, bunTarget, compiledModuleFor, bunDecls, modules) : null
+    s.overwrite(expr.start, expr.end, `${wrap}(${fast || `__ataCompiled${index}`}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
     done.add(expr)
   }
   // schemaOf<T>() calls left outside a replaced expression become the schema
@@ -819,6 +855,10 @@ export function compileAway(code, id, ata, options) {
   if (resolverCalls.size) s.prepend(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
+  if (bunDecls.length) {
+    s.prepend(`import { validate as __ataCheck } from 'bun:bundle';\nimport type { Schema } from 'bun';\n`)
+    modules.push(bunDecls.join(''))
+  }
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)

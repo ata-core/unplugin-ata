@@ -37,6 +37,22 @@ export interface Options {
    */
   report?: boolean
   /**
+   * Under `Bun.build({ compile: { aot: true } })`, a replaced `new Validator(schema)`
+   * in a TypeScript file hands the schema's rules to Bun's compiler as a type
+   * (validate<T>), with a module for the rules a type cannot carry and the
+   * plain module behind both, so every answer stays the plain module's. Taken
+   * from the build's `compile.aot` by default; `true` asks for it without the
+   * flag, `false` keeps the plain module. Needs ata-validator 1.61.0.
+   */
+  bunTarget?: boolean
+  /**
+   * At the end of the build, hold every validator compiled away against the
+   * runtime on documents made from its schema (as `ata verify` does), and fail
+   * the build on a disagreement. `true` checks 50 documents a schema, a number
+   * that many. Off by default. Needs ata-validator 1.61.0.
+   */
+  verify?: boolean | number
+  /**
    * Where a replaced validator's error detail comes from. `'auto'` (default)
    * scans the project's sources at build start and writes modules compact
    * (their verdict and schema, with errors from `ata-validator/error-runtime`,

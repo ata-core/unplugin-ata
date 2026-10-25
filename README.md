@@ -168,6 +168,8 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context`, esbuild's `absWorkingDir` and Bun.build's `root` are read; Rollup and Rolldown need it passed. |
 | `alias` | Vite's `resolve.alias` | Import aliases inside `.ts` schema files. tsconfig `paths` work without configuration. |
 | `compileAway` | `true` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.36.0; with an older version the runtime stays, and a warning is printed only if you set the option yourself. |
+| `bunTarget` | from `compile.aot` | Under `Bun.build({ compile: { aot: true } })`, hand a replaced validator's rules to Bun's compiler as a type. See [Bun, compiled ahead of time](#bun-compiled-ahead-of-time). Needs ata-validator 1.61.0. |
+| `verify` | `false` | Hold every validator compiled away against the runtime on generated documents at the end of the build, and fail the build on a disagreement; a number sets how many documents a schema (default 50). Needs ata-validator 1.61.0. |
 | `report` | `true` | At the end of the build, log how many validators were compiled away and every `new Validator(...)` kept on the runtime, with file, line and reason. See [the report](#the-report-what-stayed-on-the-runtime-and-why). |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what every replaceable call would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
@@ -409,6 +411,31 @@ two arguments; ata-validator declines to compile the schema standalone. With
 every call replaced the last line says so: `the runtime compiler is out of the
 bundle`. `report: false` turns the lines off. Programmatically, `compileAway()`
 returns `kept` as `[{ line, reason }]` beside `replaced`.
+
+### Bun, compiled ahead of time
+
+Bun's ahead-of-time compiler (`bun build --compile --aot`, `Bun.build({ compile:
+{ aot: true } })`) runs code a library hands to `new Function` through an
+interpreter, and checks a TypeScript type in machine code through its own
+`validate<T>()`. When the plugin runs inside such a build, a replaced `new
+Validator(schema)` in a TypeScript file gets both: the rules a type can carry
+(kinds, properties, closed objects, items, lengths, bounds, literals) become a
+type with Bun's `Schema` tags that `validate<T>()` checks; the rules a type
+cannot carry (`format`, `oneOf`, `patternProperties`, among others) stay in a
+second compiled module; and the plain module stands behind both, so every
+answer is the plain module's and the error list is its list. The source stays
+as written. On a ten-item order the check went from 108 ns to 96 under the
+compiler's pull request build; on a three-field schema whose e-mail format the
+second module checks, 34 to 33. The plain module alone is already written for
+JavaScriptCore when the plugin runs under Bun (65 to 53 ns on that order over
+a module built on Node). `bunTarget: false` keeps the plain module; a
+JavaScript file keeps it too, since the type needs TypeScript.
+
+`verify: true` adds the proof: at the end of the build every validator the
+plugin compiled away is held against a runtime `Validator` built from the same
+schema on 50 documents made from it, half with one rule broken, and a
+disagreement fails the build with the document. This is `ata verify` inside
+the bundler.
 
 ## How it works
 

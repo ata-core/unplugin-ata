@@ -122,7 +122,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // generator is only looked for in a file that names the call.
       if (code.includes('schemaOf')) await session.typeSchemas.ready()
       const kept = []
-      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept })
+      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kept })
       return out ? { code: out.code, map: out.map } : null
     },
@@ -132,7 +132,15 @@ export const unpluginFactory = (userOptions = {}) => {
     // line and the reason. A kept call is the one thing that puts the runtime
     // compiler back in the bundle, so it is said out loud, once per build.
     // `report: false` turns it off.
-    buildEnd() {
+    async buildEnd() {
+      // `verify`: every schema compiled away is held against the runtime on
+      // documents made from it, as `ata verify` does, and a disagreement fails
+      // the build. `verify: true` checks 50 documents a schema, a number that
+      // many; off by default, since it costs a build a few hundred ms a schema.
+      if (userOptions.verify && userOptions.compileAway !== false) {
+        const api = await session.api()
+        await runVerify(session.verifying, api, userOptions.verify, session.logger)
+      }
       if (userOptions.report === false || userOptions.compileAway === false) return
       let replaced = 0
       const kept = []
@@ -175,6 +183,13 @@ export const unpluginFactory = (userOptions = {}) => {
       setup(build) {
         const root = build.config && build.config.root
         if (!userOptions.root && root) session.root = root
+        // `Bun.build({ compile: { aot: true } })`: the executable is compiled
+        // ahead of time, and a replaced validator can hand its rules to the
+        // compiler as a type (the Bun target). `bunTarget: false` keeps the
+        // plain module; `bunTarget: true` asks for it without the aot flag,
+        // which only an aot build can honour.
+        const compile = build.config && build.config.compile
+        session.bunAot = userOptions.bunTarget === true || (userOptions.bunTarget !== false && !!(compile && typeof compile === 'object' && compile.aot === true))
       },
     },
 
@@ -200,5 +215,24 @@ export const unpluginFactory = (userOptions = {}) => {
 
 const unplugin = /* #__PURE__ */ createUnplugin(unpluginFactory)
 
+// The verify step: every schema compiled away in the build, held against the
+// runtime through ata-validator's verifySource; a disagreement throws, which
+// fails the build in every bundler. `count` is `true` for 50 documents a
+// schema or a number.
+async function runVerify (entries, api, count, logger) {
+  if (!api.verify) throw new Error('[unplugin-ata] verify needs ata-validator 1.61.0 or later')
+  const n = typeof count === 'number' ? count : 50
+  const failed = []
+  let checked = 0
+  for (const [key, { schema, src }] of entries) {
+    const r = await api.verify.verifySource(schema, src, { generate: n, name: key })
+    checked++
+    if (!api.verify.ok(r)) failed.push(api.verify.renderReport([r]))
+  }
+  entries.clear()
+  if (failed.length) throw new Error(`[unplugin-ata] verify: ${failed.length} compiled validator(s) disagree with the runtime\n${failed.join('\n')}`)
+  if (checked) logger?.info?.(`[unplugin-ata] verify: ${checked} compiled validator(s) answer as the runtime does on ${n} generated documents each`)
+}
+
 export default unplugin
-export { compile, __internal }
+export { compile, __internal, runVerify }

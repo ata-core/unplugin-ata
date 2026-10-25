@@ -271,6 +271,9 @@ async function loadAta() {
     compiledResolver,
     rjsfCompiler,
     compiledSharedErrors,
+    // The Bun target and the verification, from ata-validator 1.61.0.
+    bunTarget: build.bunTarget && typeof build.bunTarget.schemaToBunType === 'function' ? build.bunTarget : null,
+    verify: build.verify && typeof build.verify.verifySource === 'function' ? build.verify : null,
     toStandaloneModule: build.toStandaloneModule,
     compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,
     compiledSchemaFor: canCompileAway ? build.compiledSchemaFor : null,
@@ -554,6 +557,8 @@ export function createSession(userOptions = {}) {
     // Per file, what compileAway replaced and what it kept, for the report at
     // the end of the build.
     report: new Map(),
+    // Schemas compiled away in this build, with the module source, for `verify`.
+    verifying: new Map(),
     async compileAll() {
       const api = await (apiPromise ??= loadAta())
       const files = await resolveSchemaFiles(options.schemas, session.root)
