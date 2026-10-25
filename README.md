@@ -430,8 +430,15 @@ build, 1024 distinct documents, 10% of them invalid: a ten-item order 121 to
 three-field schema whose e-mail format the second module checks, 34 to 39
 against 33 to 37. The plain module alone is already written for
 JavaScriptCore when the plugin runs under Bun (65 to 53 ns on that order over
-a module built on Node). `bunTarget: false` keeps the plain module; a
-JavaScript file keeps it too, since the type needs TypeScript. A schema
+a module built on Node). Inside a Hono request (`app.fetch` with a `Request`, no socket, the same
+1024 bodies, one `--aot` executable): a route that only parses the body 1,221
+to 1,229 ns, the same route with the ata check 1,337 to 1,391, with the ata
+check and the error list in the 400 response 1,494 to 1,508, with zod 4,522
+to 4,554. At that level the typed check and the plain module are within the
+run's noise of each other (1,347 to 1,354 against 1,337 to 1,391); the gain
+that matters there is the module against a validator that generates code at
+run time. `bunTarget: false` keeps the plain module; a JavaScript file keeps
+it too, since the type needs TypeScript. A schema
 compiled from the `schemas` globs gets the same: the plugin writes
 `x.schema.bun.ts` (and `x.schema.rest.js` for the rules a type cannot carry)
 beside `x.schema.js`, and under the ahead-of-time build an import of the

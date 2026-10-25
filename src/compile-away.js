@@ -587,7 +587,10 @@ export function compileAway(code, id, ata, options) {
   const virtual = options && typeof options.virtual === 'function' ? options.virtual : null
   const virtualImports = []
   const placeModule = (name, src, verdict, names) => {
-    if (virtual) virtualImports.push(`import * as ${name} from ${JSON.stringify(virtual(src))};\n`)
+    // The checker has no declaration for a virtual module (TS2307 under a
+    // strict project); the one line is excused and the module is `any`, as
+    // the inlined JavaScript was. The file's own code stays checked.
+    if (virtual) virtualImports.push(`// @ts-ignore: a module @ata-project/unplugin wrote at build time\nimport * as ${name} from ${JSON.stringify(virtual(src))};\n`)
     else modules.push(inlineModule(src, name.replace(/^__ataCompiled/, ''), verdict, names))
   }
   const { compiledModuleFor, compiledSchemaFor } = ata
