@@ -424,9 +424,11 @@ type with Bun's `Schema` tags that `validate<T>()` checks; the rules a type
 cannot carry (`format`, `oneOf`, `patternProperties`, among others) stay in a
 second compiled module; and the plain module stands behind both, so every
 answer is the plain module's and the error list is its list. The source stays
-as written. On a ten-item order the check went from 108 ns to 96 under the
-compiler's pull request build; on a three-field schema whose e-mail format the
-second module checks, 34 to 33. The plain module alone is already written for
+as written. Measured through the plugin with the compiler's pull request
+build, 1024 distinct documents, 10% of them invalid: a ten-item order 121 to
+126 ns a document with the plain module, 107 to 114 with the typed check; a
+three-field schema whose e-mail format the second module checks, 34 to 39
+against 33 to 37. The plain module alone is already written for
 JavaScriptCore when the plugin runs under Bun (65 to 53 ns on that order over
 a module built on Node). `bunTarget: false` keeps the plain module; a
 JavaScript file keeps it too, since the type needs TypeScript. A schema
