@@ -186,7 +186,7 @@ export const unpluginFactory = (userOptions = {}) => {
     // Bun.build({ compile }), where the compiled validators replace the
     // runtime in the executable.
     bun: {
-      setup(build) {
+      async setup(build) {
         const root = build.config && build.config.root
         if (!userOptions.root && root) session.root = root
         // `Bun.build({ compile: { aot: true } })`: the executable is compiled
@@ -198,6 +198,14 @@ export const unpluginFactory = (userOptions = {}) => {
         session.bunAot = userOptions.bunTarget === true || (userOptions.bunTarget !== false && !!(compile && typeof compile === 'object' && compile.aot === true))
         // The glob compile writes the Bun target beside each module too.
         session.options.bunTarget = session.bunAot
+        // Every module the build writes then takes the form made for the
+        // compiler (ata-validator's 'jsc-aot' target: a closed object's keys
+        // read once and compared in order), which is level with Bun's own
+        // validate<T> there and costs a few ns on the JIT, where it is not used.
+        if (session.bunAot) {
+          const api = await session.api()
+          if (api.bunTarget && typeof api.bunTarget.setTargetEngine === 'function') api.bunTarget.setTargetEngine('jsc-aot')
+        }
       },
     },
 
