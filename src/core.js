@@ -518,9 +518,9 @@ async function compileOne(schemaFile, options, root, api, logger, fresh = false)
 
   // The Bun target beside the module, for a build compiled ahead of time
   // (options.bunTarget, set by the Bun entry when the build has compile.aot):
-  // the schema's rules as a type for Bun's validate<T>, the residual module
-  // where the type does not carry every rule, and this module behind both.
-  // An import of the module is sent to the .bun.ts by the plugin's resolveId.
+  // the schema as a TypeScript type, the module's functions with the type on
+  // them, and a typed parse(text); every check is this module's. An import of
+  // the module is sent to the .bun.ts by the plugin's resolveId.
   let bunChanged = false
   if (options.bunTarget && api.bunTarget) {
     const written = await writeBunTargetBeside(schema, paths.mjs, typeName, options.format, api, defaultRewritten)
@@ -549,36 +549,24 @@ async function compileOne(schemaFile, options, root, api, logger, fresh = false)
   return { changed: mjsChanged || dtsChanged || bunChanged, typeName, paths }
 }
 
-// `<module>.bun.ts` and, when the type does not carry the whole schema,
-// `<module>.rest.<ext>`, written beside a compiled module. Returns the paths
-// written, or `bun: null` when the split cannot be made (the module stands
-// alone, as everywhere else).
+// `<module>.bun.ts`, written beside a compiled module. Returns the path
+// written, or `bun: null` when no type can be written for the schema (the
+// module stands alone, as everywhere else).
 async function writeBunTargetBeside (schema, modulePath, typeName, format, api, defaultIsValidate) {
   let mapped
   try { mapped = api.bunTarget.schemaToBunType(schema, { name: typeName }) } catch { return { changed: false, bun: null } }
   const ext = path.extname(modulePath)
-  const base = modulePath.slice(0, modulePath.length - ext.length)
-  let residualPath = null
-  let changed = false
-  if (mapped.residual !== null) {
-    let src = null
-    try { src = api.toStandaloneModule(new api.Validator(mapped.residual), { format: format === 'cjs' ? 'cjs' : 'esm' }) } catch { src = null }
-    if (!src) return { changed: false, bun: null }
-    residualPath = `${base}.rest${ext}`
-    changed = (await writeIfChanged(residualPath, src)) || changed
-  }
-  const bunPath = `${base}.bun.ts`
+  const bunPath = `${modulePath.slice(0, modulePath.length - ext.length)}.bun.ts`
   let text = api.bunTarget.toBunModule({
     schemaFile: path.basename(modulePath),
     moduleImport: './' + path.basename(modulePath),
-    residualImport: residualPath ? './' + path.basename(residualPath) : null,
     typeName: mapped.name,
     typeSource: mapped.type,
     aliases: mapped.aliases,
   })
   // The same default export as the module beside it.
   text += defaultIsValidate ? 'export default validate\n' : 'export default { validate, isValid }\n'
-  changed = (await writeIfChanged(bunPath, text)) || changed
+  const changed = await writeIfChanged(bunPath, text)
   return { changed, bun: bunPath }
 }
 

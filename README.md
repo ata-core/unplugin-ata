@@ -168,7 +168,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `root` | from the bundler | Where the globs resolve from. Vite's root, Webpack's and Rspack's `context`, esbuild's `absWorkingDir` and Bun.build's `root` are read; Rollup and Rolldown need it passed. |
 | `alias` | Vite's `resolve.alias` | Import aliases inside `.ts` schema files. tsconfig `paths` work without configuration. |
 | `compileAway` | `true` | Replace `new Validator(schema)` in your code with a validator compiled at build time, where that gives the same results. See below. Needs ata-validator 1.36.0; with an older version the runtime stays, and a warning is printed only if you set the option yourself. |
-| `bunTarget` | from `compile.aot` | Under `Bun.build({ compile: { aot: true } })`, hand a replaced validator's rules to Bun's compiler as a type. See [Bun, compiled ahead of time](#bun-compiled-ahead-of-time). Needs ata-validator 1.61.0. |
+| `bunTarget` | from `compile.aot` | Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside each module compiled from the globs: the schema as a type and a typed `parse(text)`, with the module answering every check. See [Bun, compiled ahead of time](#bun-compiled-ahead-of-time). Needs ata-validator 1.61.0. |
 | `verify` | `'ci'` | Hold every validator compiled away against the runtime on generated documents at the end of the build, and fail the build on a disagreement. `'ci'` runs it where the `CI` environment variable is set, `true` everywhere, a number that many documents a schema (50 for `true`), `false` never. Needs ata-validator 1.61.0; with an older one the default does nothing. |
 | `report` | `true` | At the end of the build, log how many validators were compiled away and every `new Validator(...)` kept on the runtime, with file, line and reason. See [the report](#the-report-what-stayed-on-the-runtime-and-why). |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what every replaceable call would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
@@ -415,39 +415,43 @@ returns `kept` as `[{ line, reason }]` beside `replaced`.
 ### Bun, compiled ahead of time
 
 Bun's ahead-of-time compiler (`bun build --compile --aot`, `Bun.build({ compile:
-{ aot: true } })`) runs code a library hands to `new Function` through an
-interpreter, and checks a TypeScript type in machine code through its own
-`validate<T>()`. When the plugin runs inside such a build, a replaced `new
-Validator(schema)` in a TypeScript file gets both: the rules a type can carry
-(kinds, properties, closed objects, items, lengths, bounds, literals) become a
-type with Bun's `Schema` tags that `validate<T>()` checks; the rules a type
-cannot carry (`format`, `oneOf`, `patternProperties`, among others) stay in a
-second compiled module; and the plain module stands behind both, so every
-answer is the plain module's and the error list is its list. The source stays
-as written. Measured through the plugin with the compiler's pull request
-build, 1024 distinct documents, 10% of them invalid: a ten-item order 121 to
-126 ns a document with the plain module, 107 to 114 with the typed check; a
-three-field schema whose e-mail format the second module checks, 34 to 39
-against 33 to 37. The plain module alone is already written for
-JavaScriptCore when the plugin runs under Bun (65 to 53 ns on that order over
-a module built on Node). Inside a Hono request (`app.fetch` with a `Request`, no socket, the same
-1024 bodies, one `--aot` executable): a route that only parses the body 1,221
-to 1,229 ns, the same route with the ata check 1,337 to 1,391, with the ata
-check and the error list in the 400 response 1,494 to 1,508, with zod 4,522
-to 4,554. At that level the typed check and the plain module are within the
-run's noise of each other (1,347 to 1,354 against 1,337 to 1,391); the gain
-that matters there is the module against a validator that generates code at
-run time. `bunTarget: false` keeps the plain module; a JavaScript file keeps
-it too, since the type needs TypeScript. A schema
-compiled from the `schemas` globs gets the same: the plugin writes
-`x.schema.bun.ts` (and `x.schema.rest.js` for the rules a type cannot carry)
-beside `x.schema.js`, and under the ahead-of-time build an import of the
-module is sent to the `.bun.ts`, which exports the same names, the type, and
-`parse(text)`, Bun's `JSON.parse<T>()` with the residual and the module
-behind it. The generated `.d.ts` declares `parse` in that build. In that build every
-module also carries ata's one-pass error function, which answers a rejection
-with its error list 3.8x cheaper than the default collector and is 20% larger
-gzipped, a size an executable does not pay for.
+{ aot: true } })`, an open pull request as of October 2026) runs code a
+library hands to `new Function` through an interpreter. A module the plugin
+writes is plain JavaScript and compiles with the program, so under that
+compiler a replaced `new Validator(schema)` costs what it costs on the JIT.
+Measured through the plugin with the compiler's pull request build of
+2026-10-24, 1024 distinct documents, 10% of them invalid: a ten-item order 121
+to 126 ns a document, where the same check through the runtime `Validator`
+is 492 (generated code, interpreted) or 80 (its interpreted engine). Inside a
+Hono request (`app.fetch` with a `Request`, no socket, the same 1024 bodies,
+one `--aot` executable): a route that only parses the body 1,221 to 1,229 ns,
+the same route with the ata check 1,337 to 1,391, with the ata check and the
+error list in the 400 response 1,494 to 1,508, with zod 4,522 to 4,554.
+
+In that build every module is written for Bun's compiler: a closed object's
+keys are read once and compared with the declared list in order (65 to 53 ns
+on that order over a module built on Node), and a rejection is answered with
+ata's one-pass error function, 3.8x cheaper than the default collector and
+20% larger gzipped, a size an executable does not pay for. A schema compiled
+from the `schemas` globs also gets `x.schema.bun.ts` beside `x.schema.js`:
+the schema as a TypeScript type, `validate` and `isValid` with the type on
+them, and `parse(text)`, which declares the type where it parses, so the
+compiler makes the objects with that layout and the code that reads them
+stays on its fast path, and the module checks the content. Under the
+ahead-of-time build an import of the module is sent to the `.bun.ts`, and
+the generated `.d.ts` declares `parse`. Every check is the module's.
+`bunTarget: false` leaves the `.bun.ts` out. Without the plugin, a project
+reaches the same file through an `"aot"` condition in its `package.json`
+`imports`, which that compiler reads and nothing else does:
+
+```json
+{ "imports": { "#schemas/*": { "aot": "./schemas/*.bun.ts", "default": "./schemas/*.js" } } }
+```
+
+The pull request carried its own typed validator (`validate<T>` from
+`bun:bundle`) until 2026-10-25, and the plugin wrote the schema's rules as a
+type for it; that validator left the pull request to return as a change of
+its own, and the plugin writes nothing for it now.
 
 `verify` adds the proof: at the end of the build every validator the plugin
 compiled away is held against a runtime `Validator` built from the same schema

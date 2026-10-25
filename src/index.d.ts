@@ -37,12 +37,12 @@ export interface Options {
    */
   report?: boolean
   /**
-   * Under `Bun.build({ compile: { aot: true } })`, a replaced `new Validator(schema)`
-   * in a TypeScript file hands the schema's rules to Bun's compiler as a type
-   * (validate<T>), with a module for the rules a type cannot carry and the
-   * plain module behind both, so every answer stays the plain module's. Taken
-   * from the build's `compile.aot` by default; `true` asks for it without the
-   * flag, `false` keeps the plain module. Needs ata-validator 1.61.0.
+   * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
+   * each module compiled from the `schemas` globs: the schema as a TypeScript
+   * type, the module's functions with the type on them, and a typed
+   * `parse(text)`; an import of the module goes there in that build. Every
+   * check is the module's. Taken from the build's `compile.aot` by default;
+   * `true` writes it without the flag, `false` never. Needs ata-validator 1.61.0.
    */
   bunTarget?: boolean
   /**

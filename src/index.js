@@ -203,21 +203,21 @@ export const unpluginFactory = (userOptions = {}) => {
         const root = build.config && build.config.root
         if (!userOptions.root && root) session.root = root
         // `Bun.build({ compile: { aot: true } })`: the executable is compiled
-        // ahead of time, and a replaced validator can hand its rules to the
-        // compiler as a type (the Bun target). `bunTarget: false` keeps the
-        // plain module; `bunTarget: true` asks for it without the aot flag,
-        // which only an aot build can honour.
+        // ahead of time, and each module compiled from the `schemas` globs
+        // gets a `.bun.ts` beside it (the Bun target): the schema as a type,
+        // the module's functions with the type on them, and a typed
+        // parse(text). `bunTarget: false` leaves it out; `bunTarget: true`
+        // writes it without the aot flag.
         const compile = build.config && build.config.compile
         session.bunAot = userOptions.bunTarget === true || (userOptions.bunTarget !== false && !!(compile && typeof compile === 'object' && compile.aot === true))
-        // The glob compile writes the Bun target beside each module too.
+        // The glob compile writes the Bun target beside each module.
         session.options.bunTarget = session.bunAot
         // Every module the build writes then takes the form made for the
         // compiler (ata-validator's 'jsc-aot' target: a closed object's keys
-        // read once and compared in order), which is level with Bun's own
-        // validate<T> there and costs a few ns on the JIT, where it is not used.
-        // The form follows the executable, not the bunTarget option: a plain
-        // module in an aot executable takes it too, and so does the one-pass
-        // error function.
+        // read once and compared in order), which costs a few ns on the JIT,
+        // where it is not used. The form follows the executable, not the
+        // bunTarget option: a module in an aot executable takes it either
+        // way, and so does the one-pass error function.
         const aot = !!(compile && typeof compile === 'object' && compile.aot === true)
         if (session.bunAot || aot) {
           const api = await session.api()
@@ -230,8 +230,10 @@ export const unpluginFactory = (userOptions = {}) => {
 
     // Under a Bun build compiled ahead of time, an import of a module the
     // plugin compiled from a schema goes to the `.bun.ts` written beside it,
-    // which checks the schema's rules through Bun's compiler and exports the
-    // same names (validate, isValid, the default) plus the type and parse().
+    // which exports the same names (validate, isValid, the default) with the
+    // schema's type on them, the type itself, and parse(). A project can do
+    // the same without the plugin with an "aot" condition in its package.json
+    // `imports`, which Bun's compiler reads and nothing else does.
     resolveId(id, importer) {
       if (id.startsWith('ata-compiled:')) return { id }
       if (!session.bunAot || !importer || !id.startsWith('.')) return null
