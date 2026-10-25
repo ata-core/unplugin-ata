@@ -478,6 +478,9 @@ esbuild and Rspack, imports each bundle and runs the validator it contains. The
 compileAway tests build a second entry with all six, check that neither the
 runtime compiler nor the interpreter is in the output, and compare every answer
 with `new Validator`; the decline rules are tested on their own.
+The Bun target's end-to-end tests build an executable with `Bun.build({
+compile: { aot: true } })` and run only when `BUN_AOT` names a Bun that has
+`--aot`; the transform's output is checked without it.
 
 ## Package name
 
