@@ -435,9 +435,10 @@ ata's one-pass error function, 3.8x cheaper than the default collector and
 20% larger gzipped, a size an executable does not pay for. A schema compiled
 from the `schemas` globs also gets `x.schema.bun.ts` beside `x.schema.js`:
 the schema as a TypeScript type, `validate` and `isValid` with the type on
-them, and `parse(text)`, which declares the type where it parses, so the
-compiler makes the objects with that layout and the code that reads them
-stays on its fast path, and the module checks the content. Under the
+them, and `parse(text)`, which declares the type where it parses and has the
+module check the content. It is a type for the program, not a faster path:
+on that order with the pull request build of 2026-10-25, `parse` 564 to 574
+ns against 570 to 578 for a plain parse and the module. Under the
 ahead-of-time build an import of the module is sent to the `.bun.ts`, and
 the generated `.d.ts` declares `parse`. Every check is the module's.
 `bunTarget: false` leaves the `.bun.ts` out. Without the plugin, a project
