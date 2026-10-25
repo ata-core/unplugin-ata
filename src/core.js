@@ -610,6 +610,8 @@ export function createSession(userOptions = {}) {
     report: new Map(),
     // Schemas compiled away in this build, with the module source, for `verify`.
     verifying: new Map(),
+    // Virtual module sources of an ahead-of-time build, by id.
+    virtual: new Map(),
     async compileAll() {
       const api = await (apiPromise ??= loadAta())
       const files = await resolveSchemaFiles(options.schemas, session.root)

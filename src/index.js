@@ -126,9 +126,18 @@ export const unpluginFactory = (userOptions = {}) => {
       // generator is only looked for in a file that names the call.
       if (code.includes('schemaOf')) await session.typeSchemas.ready()
       const kept = []
-      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying })
+      // Under the ahead-of-time compile the compiled modules are virtual .js
+      // modules (see compile-away.js, `virtual`), served by load() below.
+      const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
+      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kept })
       return out ? { code: out.code, map: out.map } : null
+    },
+
+    // The compiled modules of an ahead-of-time build, by their virtual ids.
+    load(id) {
+      const src = session.virtual.get(id)
+      return src === undefined ? null : { code: src, map: null }
     },
 
     // The report: how many validators the build compiled away, and every
@@ -224,6 +233,7 @@ export const unpluginFactory = (userOptions = {}) => {
     // which checks the schema's rules through Bun's compiler and exports the
     // same names (validate, isValid, the default) plus the type and parse().
     resolveId(id, importer) {
+      if (id.startsWith('ata-compiled:')) return { id }
       if (!session.bunAot || !importer || !id.startsWith('.')) return null
       // The .bun.ts imports the module beside it by that name; sending that
       // import back to itself would make it its own fallback.

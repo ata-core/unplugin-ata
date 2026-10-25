@@ -43,6 +43,14 @@ export const why = (d: unknown) => check.validate(d).errors
     assert.ok(c.includes('catch { return __ataCompiled0.isValid(d) }'))
     assert.ok(c.includes('__ataFromCompiled(__ataFast0,'))
     assert.ok(!c.includes('new Validator('))
+    // With `virtual`, the modules leave the file as imports of .js modules.
+    const got = new Map()
+    const v = compileAway(code, '/app/src/orders.ts', ata, { bunTarget: ata.bunTarget, virtual: (src) => { const id = `ata-compiled:${got.size}.js`; got.set(id, src); return id } })
+    assert.equal(got.size, 2, 'the module and the residual')
+    assert.ok(v.code.includes('import * as __ataCompiled0 from "ata-compiled:0.js"'), v.code.slice(0, 400))
+    assert.ok(v.code.includes('import * as __ataRest0 from "ata-compiled:1.js"'))
+    assert.ok(!v.code.includes('const __ataCompiled0 = (() =>'))
+    assert.ok(/export \{[^}]*isValid/.test(got.get('ata-compiled:0.js')), 'the virtual module keeps its exports')
   })
 
   it('keeps the plain module for a JavaScript file and when the target is off', () => {
@@ -88,6 +96,9 @@ if (!r.success) { console.error(r.logs.map((l) => l.message).join('\\n')); proce
     // dir gets a link so the entry's import resolves there too.
     await fs.mkdir(path.join(dir, 'node_modules'), { recursive: true })
     await fs.symlink(path.resolve(here, '..', 'node_modules', 'ata-validator'), path.join(dir, 'node_modules', 'ata-validator'))
+    // A project with @types/bun type-checks strictly under --aot; plain
+    // JavaScript written into a TypeScript file would fail with TS7006.
+    await fs.writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noImplicitAny: true } }))
     const b = spawnSync(bun, ['build.ts'], { cwd: dir, encoding: 'utf8' })
     assert.equal(b.status, 0, b.stdout + b.stderr)
     const r = spawnSync(path.join(dir, 'orders'), [], { cwd: dir, encoding: 'utf8' })
@@ -115,6 +126,7 @@ if (!r.success) { console.error(r.logs.map((l) => l.message).join('\\n')); proce
 `)
     await fs.mkdir(path.join(dir, 'node_modules'), { recursive: true })
     await fs.symlink(path.resolve(here, '..', 'node_modules', 'ata-validator'), path.join(dir, 'node_modules', 'ata-validator'))
+    await fs.writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noImplicitAny: true } }))
     const b = spawnSync(bun, ['build.ts'], { cwd: dir, encoding: 'utf8' })
     assert.equal(b.status, 0, b.stdout + b.stderr)
     const files = (await fs.readdir(path.join(dir, 'schemas'))).sort()

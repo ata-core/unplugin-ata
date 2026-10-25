@@ -506,7 +506,7 @@ export async function sharedErrorsPay(sources, ata) {
 // wherever the type refuses, so every answer is the plain module's. Returns
 // the name of that object, or null when the split cannot be made (the plain
 // module then stands alone, as everywhere else).
-function bunTargetFor(schema, index, api, compiledModuleFor, decls, modules) {
+function bunTargetFor(schema, index, api, compiledModuleFor, decls, placeModule) {
   let mapped
   try { mapped = api.schemaToBunType(schema, { name: `__AtaT${index}`, aliasPrefix: `__AtaD${index}_` }) } catch { return null }
   let rest = null
@@ -515,7 +515,7 @@ function bunTargetFor(schema, index, api, compiledModuleFor, decls, modules) {
     try { restSrc = compiledModuleFor(mapped.residual, { format: 'esm' }) } catch { restSrc = null }
     if (!restSrc) return null
     rest = `__ataRest${index}`
-    modules.push(inlineModule(restSrc, `Rest${index}`, true).replace(`__ataCompiledRest${index}`, rest))
+    placeModule(rest, restSrc, true)
   }
   for (const [n, src] of mapped.aliases) decls.push(`type ${n} = ${src};\n`)
   decls.push(`type ${mapped.name} = ${mapped.type};\n`)
@@ -525,7 +525,9 @@ function bunTargetFor(schema, index, api, compiledModuleFor, decls, modules) {
 
 function inlineModule(src, index, verdict, names) {
   const body = src.replace(RUNTIME_IMPORT, '').split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
-  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${names || (verdict ? '{ isValid }' : '{ validate, isValid }')};\n})();\n`
+  // `index` is a number for __ataCompiledN, or a full name (the residual's __ataRestN).
+  const name = /^__ata/.test(String(index)) ? String(index) : `__ataCompiled${index}`
+  return `const ${name} = (() => {\n${body}\nreturn ${names || (verdict ? '{ isValid }' : '{ validate, isValid }')};\n})();\n`
 }
 
 const RESOLVERS = '@hookform/resolvers/ata-validator'
@@ -576,6 +578,18 @@ export function compileAway(code, id, ata, options) {
   // the residual module and the plain module behind it. See bunTargetFor.
   const bunTarget = options && options.bunTarget && /\.[cm]?tsx?$/.test(id.split('?')[0]) ? options.bunTarget : null
   const bunDecls = []
+  // Under Bun's ahead-of-time compile a TypeScript file is type-checked with
+  // the project's strictness, and a compiled module written into it as plain
+  // JavaScript fails that check (TS7006 on its first untyped parameter). There
+  // the module becomes a virtual `.js` module of its own, which the checker
+  // does not read: `options.virtual(src)` registers the source and returns the
+  // specifier to import it from.
+  const virtual = options && typeof options.virtual === 'function' ? options.virtual : null
+  const virtualImports = []
+  const placeModule = (name, src, verdict, names) => {
+    if (virtual) virtualImports.push(`import * as ${name} from ${JSON.stringify(virtual(src))};\n`)
+    else modules.push(inlineModule(src, name.replace(/^__ataCompiled/, ''), verdict, names))
+  }
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
   if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
@@ -733,7 +747,7 @@ export function compileAway(code, id, ata, options) {
       if (!src || !src.includes('function _ataOrder(')) continue
       const index = modules.length
       const fill = /\nfunction applyDefaults\(/.test(src)
-      modules.push(inlineModule(src, index, false, fill ? '{ validate, applyDefaults }' : '{ validate }'))
+      placeModule(`__ataCompiled${index}`, src, false, fill ? '{ validate, applyDefaults }' : '{ validate }')
       s.overwrite(call.start, call.end, `__ataCompiledResolver(__ataCompiled${index}${extra})`)
       resolverCalls.add(call)
       done.add(call)
@@ -788,14 +802,16 @@ export function compileAway(code, id, ata, options) {
     if (options && options.verifying instanceof Map) options.verifying.set(`${id}:${expr.loc ? expr.loc.start.line : '?'}`, { schema, src })
     // Code that never reads errors gets the verdict wrapper and no errors at
     // all, so a compact module would only add the runtime.
-    const compact = verdict ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
+    // A virtual module cannot resolve the shared error runtime's bare import
+    // from nowhere, so it stays self-contained.
+    const compact = verdict || virtual ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
     if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
-    modules.push(inlineModule(src, index, verdict))
+    placeModule(`__ataCompiled${index}`, src, verdict)
     const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else wrappers.full = true
     // The wrappers answer verdicts through the module's isValid and read its
     // validate only on a refusal, so the Bun target replaces isValid alone.
-    const fast = bunTarget ? bunTargetFor(schema, index, bunTarget, compiledModuleFor, bunDecls, modules) : null
+    const fast = bunTarget ? bunTargetFor(schema, index, bunTarget, compiledModuleFor, bunDecls, placeModule) : null
     s.overwrite(expr.start, expr.end, `${wrap}(${fast || `__ataCompiled${index}`}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
     done.add(expr)
   }
@@ -862,6 +878,7 @@ export function compileAway(code, id, ata, options) {
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
+  if (virtualImports.length) s.prepend(virtualImports.join(''))
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
   return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size }
 }
