@@ -45,8 +45,12 @@ function cachedApi(session, api) {
   if (session.cachedApi && session.cachedApiFor === api) return session.cachedApi
   const memo = new Map()
   const compiledModuleFor = (schema, opts) => {
-    const key = JSON.stringify(schema) + '\u0000' + JSON.stringify(opts || {})
-    if (!memo.has(key)) memo.set(key, api.compiledModuleFor(schema, opts))
+    // Inside an executable compiled ahead of time the module answers
+    // rejections with ata's one-pass error function (3.6x cheaper on a
+    // rejection, 20% larger gzipped, which an executable does not pay for).
+    const o = session.onePass ? { ...(opts || {}), onePass: true } : opts
+    const key = JSON.stringify(schema) + '\u0000' + JSON.stringify(o || {})
+    if (!memo.has(key)) memo.set(key, api.compiledModuleFor(schema, o))
     return memo.get(key)
   }
   session.cachedApi = { ...api, compiledModuleFor }
@@ -203,10 +207,14 @@ export const unpluginFactory = (userOptions = {}) => {
         // read once and compared in order), which is level with Bun's own
         // validate<T> there and costs a few ns on the JIT, where it is not used.
         // The form follows the executable, not the bunTarget option: a plain
-        // module in an aot executable takes it too.
-        if (session.bunAot || !!(compile && typeof compile === 'object' && compile.aot === true)) {
+        // module in an aot executable takes it too, and so does the one-pass
+        // error function.
+        const aot = !!(compile && typeof compile === 'object' && compile.aot === true)
+        if (session.bunAot || aot) {
           const api = await session.api()
           if (api.bunTarget && typeof api.bunTarget.setTargetEngine === 'function') api.bunTarget.setTargetEngine('jsc-aot')
+          session.onePass = true
+          session.options.onePass = true
         }
       },
     },

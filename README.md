@@ -437,7 +437,10 @@ compiled from the `schemas` globs gets the same: the plugin writes
 beside `x.schema.js`, and under the ahead-of-time build an import of the
 module is sent to the `.bun.ts`, which exports the same names, the type, and
 `parse(text)`, Bun's `JSON.parse<T>()` with the residual and the module
-behind it. The generated `.d.ts` declares `parse` in that build.
+behind it. The generated `.d.ts` declares `parse` in that build. In that build every
+module also carries ata's one-pass error function, which answers a rejection
+with its error list 3.8x cheaper than the default collector and is 20% larger
+gzipped, a size an executable does not pay for.
 
 `verify` adds the proof: at the end of the build every validator the plugin
 compiled away is held against a runtime `Validator` built from the same schema

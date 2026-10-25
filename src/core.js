@@ -483,7 +483,9 @@ async function compileOne(schemaFile, options, root, api, logger, fresh = false)
   }
 
   const v = new api.Validator(schema)
-  const validatorSrc = api.toStandaloneModule(v, { format: options.format, abortEarly: options.abortEarly })
+  // options.onePass: the Bun entry sets it for an executable compiled ahead
+  // of time, where the one-pass error function's size costs nothing.
+  const validatorSrc = api.toStandaloneModule(v, { format: options.format, abortEarly: options.abortEarly, onePass: options.onePass ? true : undefined, source: options.onePass ? false : undefined })
   if (!validatorSrc) {
     logger?.warn?.(`[unplugin-ata] schema ${path.relative(root, schemaFile)} is too complex for standalone compilation`)
     return { changed: false, typeName: null, paths: null }
