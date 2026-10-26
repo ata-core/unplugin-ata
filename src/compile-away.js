@@ -794,12 +794,19 @@ export function compileAway(code, id, ata, options) {
     const plain = shape.plain && !verdict
     if (plain && !noJson(binding.methods)) { keep(expr, 'richErrors: false with validateJSON() or isValidJSON(), which the plain compiled wrapper does not have'); continue }
     let src = null
-    try { src = compiledModuleFor(schema, plain ? { format: 'esm', plainErrors: true } : { format: 'esm' }) } catch { src = null }
+    // A verdict wrapper only ever calls isValid: the module is written without
+    // its error collector (`verdictOnly`, 1.61.1 on; older versions ignore it).
+    try { src = compiledModuleFor(schema, plain ? { format: 'esm', plainErrors: true } : verdict ? { format: 'esm', verdictOnly: true } : { format: 'esm' }) } catch { src = null }
     if (!src) { keep(expr, 'ata-validator declines to compile this schema standalone (a custom error message, or a shape its error generator cannot express exactly)'); continue }
     const index = modules.length
     // `verify` holds the self-contained module against the runtime; a compact
     // module shares its verdict function with it and imports the runtime.
-    if (options && options.verifying instanceof Map) options.verifying.set(`${id}:${expr.loc ? expr.loc.start.line : '?'}`, { schema, src })
+    // verify compares errors too, so it gets the module with its collector.
+    if (options && options.verifying instanceof Map) {
+      let full = src
+      if (verdict) { try { full = compiledModuleFor(schema, { format: 'esm' }) || src } catch { full = src } }
+      options.verifying.set(`${id}:${expr.loc ? expr.loc.start.line : '?'}`, { schema, src: full })
+    }
     // Code that never reads errors gets the verdict wrapper and no errors at
     // all, so a compact module would only add the runtime.
     // A virtual module cannot resolve the shared error runtime's bare import
