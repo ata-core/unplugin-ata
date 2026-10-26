@@ -93,7 +93,9 @@ describe('compileAway in every bundler', () => {
       // A boolean-only validator that is only ever called takes the bare wrapper (1.61.1 on).
       const hasObject = await import('ata-validator/compiled-object').then(() => true, () => false)
       const hasBare = await import('ata-validator/compiled-bare').then(() => true, () => false)
-      const want = hasObject ? ['ata-validator/compiled', 'ata-validator/compiled-object', hasBare ? 'ata-validator/compiled-bare' : 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict']
+      // And one that reads errors, only ever called, the bare wrapper with ata's errors.
+      const hasBareRich = await import('ata-validator/compiled-bare-rich').then(() => true, () => false)
+      const want = hasObject ? ['ata-validator/compiled', hasBareRich ? 'ata-validator/compiled-bare-rich' : 'ata-validator/compiled-object', hasBare ? 'ata-validator/compiled-bare' : 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict']
       assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), want.sort())
       await check(path.join(dir, 'out.mjs'))
     } finally {

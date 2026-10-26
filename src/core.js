@@ -182,6 +182,10 @@ async function loadAta() {
   if (canCompileAway) {
     try { compiledBare = typeof (await import('ata-validator/compiled-bare')).barePlain === 'function' } catch { compiledBare = false }
   }
+  let compiledBareRich = false
+  if (canCompileAway) {
+    try { compiledBareRich = typeof (await import('ata-validator/compiled-bare-rich')).bareRich === 'function' } catch { compiledBareRich = false }
+  }
   let compiledObject = false
   if (canCompileAway) {
     try { compiledObject = typeof (await import('ata-validator/compiled-object')).fromCompiledObject === 'function' } catch { compiledObject = false }
@@ -302,6 +306,7 @@ async function loadAta() {
     compiledObject,
     compiledPlain,
     compiledBare,
+    compiledBareRich,
     compiledExtendChecks,
     compiledStandard,
     t,

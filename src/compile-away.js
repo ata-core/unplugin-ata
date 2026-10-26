@@ -517,7 +517,90 @@ function inlineModule(src, index, verdict, names) {
   const base = verdict ? '{ isValid }' : '{ validate, isValid }'
   const add = [DEFAULTS_EXPORT.test(src) && 'applyDefaults', VERSION_EXPORT.test(src) && 'ataVersion'].filter(Boolean)
   const out = names || (add.length ? base.replace(/\s*\}$/, ', ' + add.join(', ') + ' }') : base)
-  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${out};\n})();\n`
+  return `const __ataCompiled${index} = (() => {\n${pruneModule(body, out.replace(/[{}\s]/g, '').split(','))}\nreturn ${out};\n})();\n`
+}
+
+// The module's top-level declarations that nothing returned reaches, cut
+// before it is inlined. Inside the function that holds an inlined module a
+// bundler removes nothing, so the schema hash, a helper the schema never
+// called, or a verdict-only module's validate() all shipped. A declaration is
+// cut only when its value has no side effect to lose (a function, a literal,
+// an Object.freeze of those, a property read off a global); anything else
+// stays, and so does everything it names. A name shadowed in an inner scope
+// counts as a use, which can only keep more.
+const PURE_CALLS = new Set(['Object.freeze', 'Object.create', 'Object.getPrototypeOf'])
+const PURE_NEW = new Set(['RegExp', 'Set', 'Map'])
+function pruneModule(body, keep) {
+  let ast
+  try { ast = parse(body, { sourceType: 'script', errorRecovery: false }) } catch { return body }
+  const calleeName = (c) => c.type === 'Identifier' ? c.name : c.type === 'MemberExpression' && !c.computed && c.object.type === 'Identifier' && c.property.type === 'Identifier' ? `${c.object.name}.${c.property.name}` : null
+  const pure = (n) => {
+    if (!n) return true
+    switch (n.type) {
+      case 'StringLiteral': case 'NumericLiteral': case 'BooleanLiteral': case 'NullLiteral': case 'RegExpLiteral': case 'BigIntLiteral':
+      case 'Identifier': case 'FunctionExpression': case 'ArrowFunctionExpression': case 'ThisExpression':
+        return true
+      case 'TemplateLiteral': return n.expressions.every(pure)
+      case 'MemberExpression': return pure(n.object) && (!n.computed || pure(n.property))
+      case 'ObjectExpression': return n.properties.every((p) => p.type === 'ObjectProperty' && (!p.computed || pure(p.key)) && pure(p.value))
+      case 'ArrayExpression': return n.elements.every((e) => e === null || pure(e))
+      case 'UnaryExpression': return n.operator !== 'delete' && pure(n.argument)
+      case 'BinaryExpression': case 'LogicalExpression': return pure(n.left) && pure(n.right)
+      case 'ConditionalExpression': return pure(n.test) && pure(n.consequent) && pure(n.alternate)
+      case 'ParenthesizedExpression': return pure(n.expression)
+      case 'CallExpression': return PURE_CALLS.has(calleeName(n.callee)) && n.arguments.every(pure)
+      case 'NewExpression': return n.callee.type === 'Identifier' && PURE_NEW.has(n.callee.name) && n.arguments.every(pure)
+      default: return false
+    }
+  }
+  // Every identifier a node reads, skipping property names and object keys.
+  const reads = (node, out) => {
+    const walk = (n, parent, key) => {
+      if (!n || typeof n.type !== 'string') return
+      if (n.type === 'Identifier') {
+        if (parent && (parent.type === 'MemberExpression' || parent.type === 'OptionalMemberExpression') && key === 'property' && !parent.computed) return
+        if (parent && (parent.type === 'ObjectProperty' || parent.type === 'ObjectMethod') && key === 'key' && !parent.computed) return
+        out.add(n.name)
+        return
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'start' || k === 'end' || k === 'extra' || k === 'leadingComments' || k === 'trailingComments' || k === 'innerComments') continue
+        const v = n[k]
+        if (Array.isArray(v)) for (const x of v) walk(x, n, k)
+        else if (v && typeof v === 'object') walk(v, n, k)
+      }
+    }
+    walk(node, null, null)
+    return out
+  }
+  const stmts = ast.program.body.map((st) => {
+    let name = null
+    let removable = false
+    if (st.type === 'FunctionDeclaration' && st.id) { name = st.id.name; removable = true }
+    else if (st.type === 'VariableDeclaration' && st.declarations.length === 1 && st.declarations[0].id.type === 'Identifier') {
+      name = st.declarations[0].id.name; removable = pure(st.declarations[0].init)
+    }
+    const r = reads(st, new Set())
+    if (name) r.delete(name)
+    return { st, name, removable, reads: r }
+  })
+  const byName = new Map()
+  for (const x of stmts) if (x.name) byName.set(x.name, x)
+  const alive = new Set()
+  const work = []
+  const mark = (x) => { if (!alive.has(x)) { alive.add(x); work.push(x) } }
+  for (const x of stmts) if (!x.removable) mark(x)
+  for (const k of keep) { const x = byName.get(k); if (x) mark(x) }
+  while (work.length) for (const n of work.pop().reads) { const x = byName.get(n); if (x) mark(x) }
+  if (alive.size === stmts.length) return body
+  let outText = ''
+  let at = 0
+  for (const x of stmts) {
+    if (alive.has(x)) continue
+    outText += body.slice(at, x.st.start)
+    at = x.st.end
+  }
+  return outText + body.slice(at)
 }
 
 const RESOLVERS = '@hookform/resolvers/ata-validator'
@@ -721,7 +804,7 @@ export function compileAway(code, id, ata, options) {
   const s = new MagicString(code)
   const modules = []
   const done = new Set()
-  const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false }
+  const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false, bareRich: false }
   let usesRuntime = false
   let usesSafeRe = false
   const resolverCalls = new Set()
@@ -813,12 +896,24 @@ export function compileAway(code, id, ata, options) {
     // from nowhere, so it stays self-contained.
     const compact = verdict || virtual || plain ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
     if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
-    placeModule(`__ataCompiled${index}`, src, verdict)
     const object = !verdict && !plain && ata.compiledObject === true && noJson(binding.methods)
     // Called only, never handed to other code (`ata.compiledBare`, 1.61.1 on):
     // nothing reads `~standard` or registers a check on it, so a bare wrapper
-    // does, the verdict and the plain errors without that API surface.
-    const bare = ata.compiledBare === true && !binding.handed && (verdict || (plain && [...binding.methods].every((m) => m === 'validate' || m === 'isValidObject')))
+    // does, the verdict and the plain errors without that API surface. It
+    // reads only these of the module, so the rest is cut.
+    const onlyCalled = !binding.handed && [...binding.methods].every((m) => m === 'validate' || m === 'isValidObject')
+    const bare = ata.compiledBare === true && !binding.handed && (verdict || (plain && onlyCalled))
+    // The same for a validator that reads ata's own errors (`ata.compiledBareRich`).
+    const bareRich = !bare && !verdict && !plain && !compact && ata.compiledBareRich === true && onlyCalled
+    const fills = DEFAULTS_EXPORT.test(src) && !/"useDefaults":false/.test(optionsArg)
+    placeModule(`__ataCompiled${index}`, src, verdict, bare || bareRich ? `{ ${verdict ? '' : 'validate, '}isValid${fills ? ', applyDefaults' : ''} }` : undefined)
+    if (bareRich) {
+      wrappers.bareRich = true
+      const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
+      s.overwrite(expr.start, expr.end, `__ataBareRich(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${useDefaults})`)
+      done.add(expr)
+      continue
+    }
     if (bare) {
       wrappers.bare = true
       const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
@@ -891,6 +986,7 @@ export function compileAway(code, id, ata, options) {
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) s.prepend(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
   if (wrappers.plain) s.prepend(`import { fromCompiledPlain as __ataFromCompiledPlain } from 'ata-validator/compiled-plain';\n`)
+  if (wrappers.bareRich) s.prepend(`import { bareRich as __ataBareRich } from 'ata-validator/compiled-bare-rich';\n`)
   if (wrappers.bare) s.prepend(`import { bareVerdict as __ataBareVerdict, barePlain as __ataBarePlain } from 'ata-validator/compiled-bare';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
