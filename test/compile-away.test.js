@@ -349,3 +349,37 @@ describe('compileAway shares one error runtime when a module pays for it', { ski
     assert.ok(sizes.auto < sizes.false, `compact ${sizes.auto} should be below self-contained ${sizes.false}`)
   })
 })
+
+describe('compileAway with richErrors: false', () => {
+  // The flag the plugin sets when ata-validator/compiled-plain resolves (1.61.1 on).
+  let can = false
+  try { require.resolve('ata-validator/compiled-plain'); can = true } catch {}
+  const ata = { ...require('ata-validator/build'), compiledPlain: can, compiledVerdict: true }
+  it('takes the plain wrapper and a module written with plain errors', { skip: can ? false : 'ata-validator without compiled-plain' }, async () => {
+    const code = "import { Validator } from 'ata-validator'\nconst v = new Validator({ type: 'object', required: ['n'], properties: { n: { type: 'integer', minimum: 1 }, f: { type: 'boolean', default: false } } }, { richErrors: false })\nexport const f = (x) => v.validate(x)\n"
+    const out = compileAway(code, '/app/plain.js', ata, {})
+    assert.ok(out && out.code.includes("from 'ata-validator/compiled-plain'"), out && out.code.slice(0, 300))
+    assert.ok(out.code.includes('__ataFromCompiledPlain(__ataCompiled0,') && out.code.includes('{"richErrors":false}'))
+    assert.ok(!out.code.includes("from 'ata-validator/compiled'"))
+    // It answers as the runtime with richErrors: false.
+    const { Validator } = await import('ata-validator')
+    const { fromCompiledPlain } = await import('ata-validator/compiled-plain')
+    const schema = { type: 'object', required: ['n'], properties: { n: { type: 'integer', minimum: 1 }, f: { type: 'boolean', default: false } } }
+    const fs = await import('node:fs'); const os = await import('node:os'); const p = await import('node:path')
+    const file = p.join(fs.mkdtempSync(p.join(os.tmpdir(), 'plain-')), 'm.mjs')
+    fs.writeFileSync(file, ata.compiledModuleFor(schema, { format: 'esm', plainErrors: true }))
+    const w = fromCompiledPlain(await import(file), ata.compiledSchemaFor(schema), { richErrors: false })
+    const rt = new Validator(schema, { richErrors: false })
+    for (const d of [{ n: 2 }, { n: 0 }, {}, { n: 'x', f: 1 }]) {
+      const a = structuredClone(d), b = structuredClone(d)
+      assert.equal(JSON.stringify(w.validate(a)), JSON.stringify(rt.validate(b)))
+      assert.equal(JSON.stringify(a), JSON.stringify(b))
+    }
+  })
+  it('keeps the runtime when a richErrors: false validator validates JSON text', { skip: can ? false : 'ata-validator without compiled-plain' }, () => {
+    const kept = []
+    const out = compileAway("import { Validator } from 'ata-validator'\nconst v = new Validator({ type: 'integer' }, { richErrors: false })\nexport const f = (t) => v.validateJSON(t)\n", '/app/plainjson.js', ata, { kept })
+    assert.equal(out, null)
+    assert.match(kept[0].reason, /richErrors: false with validateJSON/)
+  })
+})

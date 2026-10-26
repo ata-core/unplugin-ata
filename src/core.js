@@ -171,6 +171,12 @@ async function loadAta() {
   // The wrapper without the JSON entry points, from ata-validator 1.61.1: code
   // that reads errors but never calls validateJSON() or isValidJSON() gets it,
   // and the position map those use stays out of the bundle.
+  // The plain wrapper, from 1.61.1: `new Validator(schema, { richErrors: false })`
+  // is compiled away too, with no error pipeline in the bundle.
+  let compiledPlain = false
+  if (canCompileAway) {
+    try { compiledPlain = typeof (await import('ata-validator/compiled-plain')).fromCompiledPlain === 'function' } catch { compiledPlain = false }
+  }
   let compiledObject = false
   if (canCompileAway) {
     try { compiledObject = typeof (await import('ata-validator/compiled-object')).fromCompiledObject === 'function' } catch { compiledObject = false }
@@ -289,6 +295,7 @@ async function loadAta() {
     compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
     compiledVerdict,
     compiledObject,
+    compiledPlain,
     compiledExtendChecks,
     compiledStandard,
     t,

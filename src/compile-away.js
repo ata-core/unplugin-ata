@@ -546,14 +546,20 @@ function resolverOptionsArg(args, code, ctx) {
 // that are not a literal the build can read, or that name anything this
 // ata-validator's wrapper does not reproduce. `useDefaults: true` is the default
 // and needs no argument.
-function compiledOptionsArg(node, ctx, supported) {
+// `plain` (ata-validator 1.61.1 on, `ata.compiledPlain`): `richErrors: false`
+// is read too, and the call is marked for the plain wrapper.
+function compiledOptionsArg(node, ctx, supported, plainOk, out) {
   const opts = staticValue(node, ctx)
   if (opts === NOT_STATIC || opts === null || typeof opts !== 'object' || Array.isArray(opts)) return NOT_STATIC
   for (const [key, value] of Object.entries(opts)) {
+    if (key === 'richErrors' && plainOk && value === false) { out.plain = true; continue }
     if (!supported.includes(key)) return NOT_STATIC
     if (key === 'useDefaults' && typeof value !== 'boolean') return NOT_STATIC
   }
-  return opts.useDefaults === false ? '{"useDefaults":false}' : ''
+  const parts = []
+  if (out.plain) parts.push('"richErrors":false')
+  if (opts.useDefaults === false) parts.push('"useDefaults":false')
+  return parts.length ? `{${parts.join(',')}}` : ''
 }
 
 export function compileAway(code, id, ata, options) {
@@ -713,7 +719,7 @@ export function compileAway(code, id, ata, options) {
   const s = new MagicString(code)
   const modules = []
   const done = new Set()
-  const wrappers = { full: false, verdict: false, object: false }
+  const wrappers = { full: false, verdict: false, object: false, plain: false }
   let usesRuntime = false
   let usesSafeRe = false
   const resolverCalls = new Set()
@@ -769,19 +775,26 @@ export function compileAway(code, id, ata, options) {
     if (!expr || expr.type !== 'NewExpression' || r.key !== 'callee') continue
     if (expr.arguments.length !== 1 && expr.arguments.length !== 2) { keep(expr, `the call has ${expr.arguments.length} arguments; one schema and at most one options object are replaced`); continue }
     let optionsArg = ''
+    const shape = { plain: false }
     if (expr.arguments.length === 2) {
-      optionsArg = compiledOptionsArg(expr.arguments[1], ctx, supportedOptions)
+      optionsArg = compiledOptionsArg(expr.arguments[1], ctx, supportedOptions, ata.compiledPlain === true, shape)
       if (optionsArg === NOT_STATIC) { keep(expr, 'the options are not a literal the build can read, or name an option a compiled module cannot reproduce'); continue }
     }
     const binding = replaceableBinding(expr, ctx)
     if (!binding) { keep(expr, 'the validator is not a const used only through validate(), isValidObject(), validateJSON(), isValidJSON() or handed over as a value; a property read, an export, a return or a reassignment keeps the runtime'); continue }
     const schema = staticValue(expr.arguments[0], ctx)
     if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) { keep(expr, 'the schema is not a value the build can read: an object literal, a const bound to one, the default import of a relative .json file, or defineSchema(...) around one'); continue }
+    const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
+    // `richErrors: false`: the module writes its errors in that plain shape
+    // and the plain wrapper hands them out, with no error pipeline in the
+    // bundle. The plain wrapper has no JSON entry points; code that calls
+    // them keeps the runtime.
+    const plain = shape.plain && !verdict
+    if (plain && !noJson(binding.methods)) { keep(expr, 'richErrors: false with validateJSON() or isValidJSON(), which the plain compiled wrapper does not have'); continue }
     let src = null
-    try { src = compiledModuleFor(schema, { format: 'esm' }) } catch { src = null }
+    try { src = compiledModuleFor(schema, plain ? { format: 'esm', plainErrors: true } : { format: 'esm' }) } catch { src = null }
     if (!src) { keep(expr, 'ata-validator declines to compile this schema standalone (a custom error message, or a shape its error generator cannot express exactly)'); continue }
     const index = modules.length
-    const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
     // `verify` holds the self-contained module against the runtime; a compact
     // module shares its verdict function with it and imports the runtime.
     if (options && options.verifying instanceof Map) options.verifying.set(`${id}:${expr.loc ? expr.loc.start.line : '?'}`, { schema, src })
@@ -789,13 +802,15 @@ export function compileAway(code, id, ata, options) {
     // all, so a compact module would only add the runtime.
     // A virtual module cannot resolve the shared error runtime's bare import
     // from nowhere, so it stays self-contained.
-    const compact = verdict || virtual ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
+    const compact = verdict || virtual || plain ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
     if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
     placeModule(`__ataCompiled${index}`, src, verdict)
-    const object = !verdict && ata.compiledObject === true && noJson(binding.methods)
-    const wrap = verdict ? '__ataFromCompiledVerdict' : object ? '__ataFromCompiledObject' : '__ataFromCompiled'
-    if (verdict) wrappers.verdict = true; else if (object) wrappers.object = true; else wrappers.full = true
-    s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
+    const object = !verdict && !plain && ata.compiledObject === true && noJson(binding.methods)
+    const wrap = verdict ? '__ataFromCompiledVerdict' : plain ? '__ataFromCompiledPlain' : object ? '__ataFromCompiledObject' : '__ataFromCompiled'
+    if (verdict) wrappers.verdict = true; else if (plain) wrappers.plain = true; else if (object) wrappers.object = true; else wrappers.full = true
+    // The verdict wrapper takes no richErrors option: errors are not read there.
+    const arg = verdict && shape.plain ? optionsArg.replace(/"richErrors":false,?/, '').replace(/^\{\}$/, '') : optionsArg
+    s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${arg ? ', ' + arg : ''})`)
     done.add(expr)
   }
   // schemaOf<T>() calls left outside a replaced expression become the schema
@@ -855,6 +870,7 @@ export function compileAway(code, id, ata, options) {
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) s.prepend(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
+  if (wrappers.plain) s.prepend(`import { fromCompiledPlain as __ataFromCompiledPlain } from 'ata-validator/compiled-plain';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
