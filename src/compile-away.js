@@ -394,7 +394,9 @@ function replaceableBinding(newExpr, ctx) {
   // A validator handed over needs the full wrapper: the consumer reads
   // `~standard`, which gives errors.
   if (handed) methods.add('validate')
-  return { name, methods }
+  // Through withKeywords the wrapper is handed over too: the keywords register
+  // their check on it with _extendChecks, which only the full wrappers have.
+  return { name, methods, handed: handed || decl.init !== newExpr }
 }
 
 // Whether a use of the validator hands it to something else as a value: an
@@ -719,7 +721,7 @@ export function compileAway(code, id, ata, options) {
   const s = new MagicString(code)
   const modules = []
   const done = new Set()
-  const wrappers = { full: false, verdict: false, object: false, plain: false }
+  const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false }
   let usesRuntime = false
   let usesSafeRe = false
   const resolverCalls = new Set()
@@ -806,6 +808,17 @@ export function compileAway(code, id, ata, options) {
     if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
     placeModule(`__ataCompiled${index}`, src, verdict)
     const object = !verdict && !plain && ata.compiledObject === true && noJson(binding.methods)
+    // Called only, never handed to other code (`ata.compiledBare`, 1.61.1 on):
+    // nothing reads `~standard` or registers a check on it, so a bare wrapper
+    // does, the verdict and the plain errors without that API surface.
+    const bare = ata.compiledBare === true && !binding.handed && (verdict || (plain && [...binding.methods].every((m) => m === 'validate' || m === 'isValidObject')))
+    if (bare) {
+      wrappers.bare = true
+      const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
+      s.overwrite(expr.start, expr.end, `${verdict ? '__ataBareVerdict' : '__ataBarePlain'}(__ataCompiled${index}${useDefaults})`)
+      done.add(expr)
+      continue
+    }
     const wrap = verdict ? '__ataFromCompiledVerdict' : plain ? '__ataFromCompiledPlain' : object ? '__ataFromCompiledObject' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else if (plain) wrappers.plain = true; else if (object) wrappers.object = true; else wrappers.full = true
     // The verdict wrapper takes no richErrors option: errors are not read there.
@@ -871,6 +884,7 @@ export function compileAway(code, id, ata, options) {
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) s.prepend(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
   if (wrappers.plain) s.prepend(`import { fromCompiledPlain as __ataFromCompiledPlain } from 'ata-validator/compiled-plain';\n`)
+  if (wrappers.bare) s.prepend(`import { bareVerdict as __ataBareVerdict, barePlain as __ataBarePlain } from 'ata-validator/compiled-bare';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)

@@ -90,8 +90,11 @@ describe('compileAway in every bundler', () => {
       // a validator never asked to validate JSON text takes the one without
       // those entry points, and one that is takes the full wrapper.
       // (ata-validator 1.61.1 on; with an older one that validator takes the full wrapper.)
+      // A boolean-only validator that is only ever called takes the bare wrapper (1.61.1 on).
       const hasObject = await import('ata-validator/compiled-object').then(() => true, () => false)
-      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), hasObject ? ['ata-validator/compiled', 'ata-validator/compiled-object', 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict'])
+      const hasBare = await import('ata-validator/compiled-bare').then(() => true, () => false)
+      const want = hasObject ? ['ata-validator/compiled', 'ata-validator/compiled-object', hasBare ? 'ata-validator/compiled-bare' : 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict']
+      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), want.sort())
       await check(path.join(dir, 'out.mjs'))
     } finally {
       await fs.rm(dir, { recursive: true, force: true })

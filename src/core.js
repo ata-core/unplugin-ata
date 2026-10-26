@@ -177,6 +177,11 @@ async function loadAta() {
   if (canCompileAway) {
     try { compiledPlain = typeof (await import('ata-validator/compiled-plain')).fromCompiledPlain === 'function' } catch { compiledPlain = false }
   }
+  // The bare wrappers, from 1.61.1: a validator only ever called, never handed over.
+  let compiledBare = false
+  if (canCompileAway) {
+    try { compiledBare = typeof (await import('ata-validator/compiled-bare')).barePlain === 'function' } catch { compiledBare = false }
+  }
   let compiledObject = false
   if (canCompileAway) {
     try { compiledObject = typeof (await import('ata-validator/compiled-object')).fromCompiledObject === 'function' } catch { compiledObject = false }
@@ -296,6 +301,7 @@ async function loadAta() {
     compiledVerdict,
     compiledObject,
     compiledPlain,
+    compiledBare,
     compiledExtendChecks,
     compiledStandard,
     t,
