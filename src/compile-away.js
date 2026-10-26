@@ -420,6 +420,10 @@ function handedOver (r) {
 // Code that only asks for a boolean never reads an error.
 const VERDICT_METHODS = new Set(['isValidObject', 'isValidJSON'])
 const verdictOnly = (methods) => [...methods].every((m) => VERDICT_METHODS.has(m))
+// Code that never validates JSON text: validate(), isValidObject() and a
+// Standard Schema handover all go through the object wrapper.
+const JSON_METHODS = new Set(['validateJSON', 'isValidJSON'])
+const noJson = (methods) => ![...methods].some((m) => JSON_METHODS.has(m))
 
 // A verdict-only module hands out isValid alone, so the error function inside
 // it is unreferenced and the bundler drops it.
@@ -499,9 +503,19 @@ export async function sharedErrorsPay(sources, ata) {
   return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 
+// The module's version stamp and, when its schema has a default, its own
+// defaults pass go out with it: the wrappers fill defaults with that pass and
+// read the stamp to know they can (lib/compiled-common.js in ata-validator),
+// so the defaults engine stays out of the bundle.
+const DEFAULTS_EXPORT = /^export \{[^}]*\bapplyDefaults\b/m
+const VERSION_EXPORT = /^export \{[^}]*\bataVersion\b/m
 function inlineModule(src, index, verdict, names) {
   const body = src.replace(RUNTIME_IMPORT, '').split('\n').filter((l) => !/^export\s/.test(l)).join('\n')
-  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${names || (verdict ? '{ isValid }' : '{ validate, isValid }')};\n})();\n`
+  // A caller that names its own exports (a form resolver) gets those only.
+  const base = verdict ? '{ isValid }' : '{ validate, isValid }'
+  const add = [DEFAULTS_EXPORT.test(src) && 'applyDefaults', VERSION_EXPORT.test(src) && 'ataVersion'].filter(Boolean)
+  const out = names || (add.length ? base.replace(/\s*\}$/, ', ' + add.join(', ') + ' }') : base)
+  return `const __ataCompiled${index} = (() => {\n${body}\nreturn ${out};\n})();\n`
 }
 
 const RESOLVERS = '@hookform/resolvers/ata-validator'
@@ -699,7 +713,7 @@ export function compileAway(code, id, ata, options) {
   const s = new MagicString(code)
   const modules = []
   const done = new Set()
-  const wrappers = { full: false, verdict: false }
+  const wrappers = { full: false, verdict: false, object: false }
   let usesRuntime = false
   let usesSafeRe = false
   const resolverCalls = new Set()
@@ -778,8 +792,9 @@ export function compileAway(code, id, ata, options) {
     const compact = verdict || virtual ? null : compactModuleFor(schema, src, ata, sharedErrors, collect)
     if (compact) { src = compact; usesRuntime = true; if (compact.includes('_ataCompileSafe')) usesSafeRe = true }
     placeModule(`__ataCompiled${index}`, src, verdict)
-    const wrap = verdict ? '__ataFromCompiledVerdict' : '__ataFromCompiled'
-    if (verdict) wrappers.verdict = true; else wrappers.full = true
+    const object = !verdict && ata.compiledObject === true && noJson(binding.methods)
+    const wrap = verdict ? '__ataFromCompiledVerdict' : object ? '__ataFromCompiledObject' : '__ataFromCompiled'
+    if (verdict) wrappers.verdict = true; else if (object) wrappers.object = true; else wrappers.full = true
     s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${optionsArg ? ', ' + optionsArg : ''})`)
     done.add(expr)
   }
@@ -839,6 +854,7 @@ export function compileAway(code, id, ata, options) {
   if (resolverCalls.size) s.prepend(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
   if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
+  if (wrappers.object) s.prepend(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)

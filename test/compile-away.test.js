@@ -86,8 +86,12 @@ describe('compileAway in every bundler', () => {
     await bundle.close()
     try {
       const out = await fs.readFile(path.join(dir, 'out.mjs'), 'utf8')
-      // `shortName` only asks for a boolean, so it takes the verdict wrapper.
-      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), ['ata-validator/compiled', 'ata-validator/compiled-verdict'])
+      // `shortName` only asks for a boolean, so it takes the verdict wrapper;
+      // a validator never asked to validate JSON text takes the one without
+      // those entry points, and one that is takes the full wrapper.
+      // (ata-validator 1.61.1 on; with an older one that validator takes the full wrapper.)
+      const hasObject = await import('ata-validator/compiled-object').then(() => true, () => false)
+      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), hasObject ? ['ata-validator/compiled', 'ata-validator/compiled-object', 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict'])
       await check(path.join(dir, 'out.mjs'))
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
@@ -177,7 +181,8 @@ describe('compileAway picks the smaller wrapper when errors are never read', () 
     const out = compileAway(head + "const v = new Validator({ type: 'integer' })\nexport const f = (x) => v.isValidObject(x) && v.isValidJSON('1')\n", file, withVerdict)
     assert.ok(out.code.includes("from 'ata-validator/compiled-verdict'"))
     assert.ok(!out.code.includes("from 'ata-validator/compiled'"))
-    assert.ok(out.code.includes('return { isValid };'), 'the error function is not handed out')
+    // The verdict and the version stamp the wrapper reads, not the error function.
+    assert.ok(/return \{ isValid(, ataVersion)? \};/.test(out.code) && !/return \{ validate/.test(out.code), 'the error function is not handed out')
   })
 
   it('keeps the full wrapper once any call reads errors', () => {

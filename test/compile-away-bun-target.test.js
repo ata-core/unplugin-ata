@@ -34,7 +34,9 @@ export const why = (d: unknown) => check.validate(d).errors
     const out = compileAway(code, '/app/src/orders.ts', ata, { bunTarget: ata.bunTarget })
     assert.ok(out && out.code)
     assert.ok(!out.code.includes('bun:bundle') && !/from 'bun'/.test(out.code), 'nothing imported from Bun')
-    assert.ok(out.code.includes('__ataFromCompiled(__ataCompiled0,'))
+    // It reads errors but never validates JSON text: the wrapper without those entry points.
+    // (ata-validator 1.61.1 on; an older one has only the full wrapper.)
+    assert.ok(out.code.includes(ata.compiledObject ? '__ataFromCompiledObject(__ataCompiled0,' : '__ataFromCompiled(__ataCompiled0,'), out.code.slice(0, 400))
     assert.ok(!out.code.includes('new Validator('))
     const off = compileAway(code, '/app/src/orders.ts', ata, {})
     assert.equal(off.code, out.code, 'the option changes nothing in a source file')

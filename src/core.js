@@ -168,6 +168,13 @@ async function loadAta() {
   if (canCompileAway) {
     try { compiledVerdict = typeof (await import('ata-validator/compiled-verdict')).fromCompiledVerdict === 'function' } catch { compiledVerdict = false }
   }
+  // The wrapper without the JSON entry points, from ata-validator 1.61.1: code
+  // that reads errors but never calls validateJSON() or isValidJSON() gets it,
+  // and the position map those use stays out of the bundle.
+  let compiledObject = false
+  if (canCompileAway) {
+    try { compiledObject = typeof (await import('ata-validator/compiled-object')).fromCompiledObject === 'function' } catch { compiledObject = false }
+  }
   // Whether the wrappers take a check registered with _extendChecks, as
   // withKeywords from @ata-project/keywords registers one; from 1.40.0. Asked
   // of a wrapper itself, so an ata-validator without it keeps such calls on
@@ -281,6 +288,7 @@ async function loadAta() {
     // 1.37.0; before it, only calls without options are replaced.
     compiledOptions: canCompileAway && Array.isArray(build.compiledOptions) ? build.compiledOptions : [],
     compiledVerdict,
+    compiledObject,
     compiledExtendChecks,
     compiledStandard,
     t,
