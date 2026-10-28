@@ -182,6 +182,12 @@ async function loadAta() {
   if (canCompileAway) {
     try { compiledBare = typeof (await import('ata-validator/compiled-bare')).barePlain === 'function' } catch { compiledBare = false }
   }
+  // The wrapper that carries `~standard` alone (ata-validator 1.61.3 on), for
+  // a validator handed only to Standard Schema consumers.
+  let compiledStandardWrapper = false
+  if (canCompileAway) {
+    try { compiledStandardWrapper = typeof (await import('ata-validator/compiled-standard')).bareStandard === 'function' } catch { compiledStandardWrapper = false }
+  }
   let compiledBareRich = false
   if (canCompileAway) {
     try { compiledBareRich = typeof (await import('ata-validator/compiled-bare-rich')).bareRich === 'function' } catch { compiledBareRich = false }
@@ -307,6 +313,7 @@ async function loadAta() {
     compiledPlain,
     compiledBare,
     compiledBareRich,
+    compiledStandardWrapper,
     compiledExtendChecks,
     compiledStandard,
     t,

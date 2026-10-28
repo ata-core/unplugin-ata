@@ -381,6 +381,8 @@ function replaceableBinding(newExpr, ctx) {
   if (ctx.declared.get(name) !== 1) return null
   const methods = new Set()
   let handed = false
+  // Handed only to Standard Schema consumers the build knows (ctx.standardConsumers).
+  let handedStandard = false
   for (const r of ctx.refs) {
     if (r.node.name !== name) continue
     if (r.node === decl.id) continue
@@ -388,32 +390,73 @@ function replaceableBinding(newExpr, ctx) {
     const member = p && (p.type === 'MemberExpression' || p.type === 'OptionalMemberExpression') && r.key === 'object' && !p.computed && p.property.type === 'Identifier' && METHODS.has(p.property.name)
     const called = member && p.__parent && (p.__parent.type === 'CallExpression' || p.__parent.type === 'OptionalCallExpression') && p.__parent.callee === p
     if (called) { methods.add(p.property.name); continue }
-    if (ctx.compiledStandard && handedOver(r)) { handed = true; continue }
+    if (ctx.compiledStandard) {
+      const call = handedTo(r)
+      if (call !== null) {
+        if (isStandardConsumer(call.callee, ctx)) handedStandard = true
+        else handed = true
+        continue
+      }
+    }
     return null
   }
-  // A validator handed over needs the full wrapper: the consumer reads
-  // `~standard`, which gives errors.
-  if (handed) methods.add('validate')
   // Through withKeywords the wrapper is handed over too: the keywords register
   // their check on it with _extendChecks, which only the full wrappers have.
-  return { name, methods, handed: handed || decl.init !== newExpr }
+  if (decl.init !== newExpr) handed = true
+  // A validator handed over needs the full wrapper: the consumer reads
+  // `~standard`, which gives errors. One handed only to known Standard Schema
+  // consumers, and never called by its own code, can take the wrapper that
+  // carries `~standard` alone (ata.compiledStandardWrapper); otherwise a handover to
+  // such a consumer counts like any other.
+  const standardOnly = handedStandard && !handed && methods.size === 0 && ctx.standardWrapper === true
+  if (handed || (handedStandard && !standardOnly)) { handed = true; methods.add('validate') }
+  return { name, methods, handed, standardOnly }
 }
+
+// Whether a callee is a binding imported from a package that takes a Standard
+// Schema and reads only its `~standard`: the import itself, or a member of a
+// namespace import (`v.sValidator`).
+function isStandardConsumer (callee, ctx) {
+  const c = ctx.standardConsumers
+  if (!c || c.size === 0) return false
+  if (callee.type === 'Identifier') return c.has(callee.name) && ctx.declared.get(callee.name) === 1
+  if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier') {
+    return c.has(callee.object.name) && ctx.declared.get(callee.object.name) === 1
+  }
+  return false
+}
+
+// Packages whose functions take a Standard Schema and read nothing of it but
+// `~standard`, where the call the validator is handed to is a function
+// imported from the package (`sValidator('json', v)`, `validator('json', v)`,
+// `useForm({ validators: { onChange: v } })`) or a member of a namespace
+// import (`os.input(v)`). A method on an object the code built itself
+// (`app.post(..., { body: v })`, `t.procedure.input(v)`) is not matched: the
+// build cannot see what reads it. `standardConsumers` in the plugin options
+// adds packages.
+const STANDARD_CONSUMERS = [
+  '@hono/standard-validator', 'hono-openapi',
+  '@tanstack/form-core', '@tanstack/react-form', '@tanstack/vue-form', '@tanstack/solid-form', '@tanstack/angular-form',
+  '@orpc/server', '@orpc/contract',
+]
 
 // Whether a use of the validator hands it to something else as a value: an
 // argument of a call, directly or inside object and array literals (`{ body:
 // v }`, `[v]`), through TypeScript wrappers and parentheses. The call itself
 // is not read (it may be any function); only the shape of the use is. A
 // member read, an assignment, an export or a return keeps the runtime.
-function handedOver (r) {
+function handedOver (r) { return handedTo(r) !== null }
+// The call or construction a use hands the validator to, or null.
+function handedTo (r) {
   let node = r.node
   let up = r.parent
   for (;;) {
-    if (!up) return false
+    if (!up) return null
     if (up.type === 'CallExpression' || up.type === 'OptionalCallExpression' || up.type === 'NewExpression') {
-      return up.arguments.includes(node)
+      return up.arguments.includes(node) ? up : null
     }
-    if (up.type === 'ObjectProperty') { if (up.value !== node) return false }
-    else if (!(up.type === 'ObjectExpression' || up.type === 'ArrayExpression' || up.type === 'TSAsExpression' || up.type === 'TSSatisfiesExpression' || up.type === 'TSNonNullExpression' || up.type === 'ParenthesizedExpression')) return false
+    if (up.type === 'ObjectProperty') { if (up.value !== node) return null }
+    else if (!(up.type === 'ObjectExpression' || up.type === 'ArrayExpression' || up.type === 'TSAsExpression' || up.type === 'TSSatisfiesExpression' || up.type === 'TSNonNullExpression' || up.type === 'ParenthesizedExpression')) return null
     node = up
     up = up.__parent
   }
@@ -753,6 +796,14 @@ export function compileAway(code, id, ata, options) {
     }
   }
 
+  // Local names imported from Standard Schema consumers (see STANDARD_CONSUMERS).
+  const consumerSources = new Set(STANDARD_CONSUMERS.concat(Array.isArray(options && options.standardConsumers) ? options.standardConsumers : []))
+  const standardConsumers = new Set()
+  for (const stmt of ast.program.body) {
+    if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type' || !consumerSources.has(stmt.source.value)) continue
+    for (const sp of stmt.specifiers) if (sp.importKind !== 'type') standardConsumers.add(sp.local.name)
+  }
+
   const { declared, refs } = scan(ast)
   if (validatorName && declared.get(validatorName) !== 1) validatorName = null
   if (resolverName && declared.get(resolverName) !== 1) resolverName = null
@@ -799,12 +850,12 @@ export function compileAway(code, id, ata, options) {
       rjsfSchemaAttrs.add(schemaAttr)
     }
   }
-  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, typeSchemas, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, compiledStandard: ata.compiledStandard === true, t: ata.t || null, tName, tCalls: new Set() }
+  const ctx = { declared, refs, consumers, rjsfSchemaAttrs, typeSchemas, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, standardConsumers, standardWrapper: ata.compiledStandardWrapper === true, compiledStandard: ata.compiledStandard === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
   const modules = []
   const done = new Set()
-  const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false, bareRich: false }
+  const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false, bareRich: false, standard: false }
   let usesRuntime = false
   let usesSafeRe = false
   const resolverCalls = new Set()
@@ -869,17 +920,20 @@ export function compileAway(code, id, ata, options) {
     if (!binding) { keep(expr, 'the validator is not a const used only through validate(), isValidObject(), validateJSON(), isValidJSON() or handed over as a value; a property read, an export, a return or a reassignment keeps the runtime'); continue }
     const schema = staticValue(expr.arguments[0], ctx)
     if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) { keep(expr, 'the schema is not a value the build can read: an object literal, a const bound to one, the default import of a relative .json file, or defineSchema(...) around one'); continue }
-    const verdict = ata.compiledVerdict === true && verdictOnly(binding.methods)
+    // Handed only to Standard Schema consumers: a module with plain errors and
+    // the wrapper that carries `~standard` alone (ata.compiledStandardWrapper, 1.61.3 on).
+    const standardOnly = binding.standardOnly === true
+    const verdict = !standardOnly && ata.compiledVerdict === true && verdictOnly(binding.methods)
     // `richErrors: false`: the module writes its errors in that plain shape
     // and the plain wrapper hands them out, with no error pipeline in the
     // bundle. The plain wrapper has no JSON entry points; code that calls
     // them keeps the runtime.
-    const plain = shape.plain && !verdict
+    const plain = shape.plain && !verdict && !standardOnly
     if (plain && !noJson(binding.methods)) { keep(expr, 'richErrors: false with validateJSON() or isValidJSON(), which the plain compiled wrapper does not have'); continue }
     let src = null
     // A verdict wrapper only ever calls isValid: the module is written without
     // its error collector (`verdictOnly`, 1.61.1 on; older versions ignore it).
-    try { src = compiledModuleFor(schema, plain ? { format: 'esm', plainErrors: true } : verdict ? { format: 'esm', verdictOnly: true } : { format: 'esm' }) } catch { src = null }
+    try { src = compiledModuleFor(schema, plain || standardOnly ? { format: 'esm', plainErrors: true } : verdict ? { format: 'esm', verdictOnly: true } : { format: 'esm' }) } catch { src = null }
     if (!src) { keep(expr, 'ata-validator declines to compile this schema standalone (a custom error message, or a shape its error generator cannot express exactly)'); continue }
     const index = modules.length
     // `verify` holds the self-contained module against the runtime; a compact
@@ -901,6 +955,15 @@ export function compileAway(code, id, ata, options) {
     // nothing reads `~standard` or registers a check on it, so a bare wrapper
     // does, the verdict and the plain errors without that API surface. It
     // reads only these of the module, so the rest is cut.
+    if (standardOnly) {
+      wrappers.standard = true
+      const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
+      placeModule(`__ataCompiled${index}`, src, false, `{ validate, isValid${DEFAULTS_EXPORT.test(src) && !useDefaults ? ', applyDefaults' : ''} }`)
+      // The schema as written: `~standard.jsonSchema` hands it out as the runtime does.
+      s.overwrite(expr.start, expr.end, `__ataBareStandard(__ataCompiled${index}, ${JSON.stringify(schema)}${useDefaults})`)
+      done.add(expr)
+      continue
+    }
     const onlyCalled = !binding.handed && [...binding.methods].every((m) => m === 'validate' || m === 'isValidObject')
     const bare = ata.compiledBare === true && !binding.handed && (verdict || (plain && onlyCalled))
     // The same for a validator that reads ata's own errors (`ata.compiledBareRich`).
@@ -986,6 +1049,7 @@ export function compileAway(code, id, ata, options) {
   if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) s.prepend(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
   if (wrappers.plain) s.prepend(`import { fromCompiledPlain as __ataFromCompiledPlain } from 'ata-validator/compiled-plain';\n`)
+  if (wrappers.standard) s.prepend(`import { bareStandard as __ataBareStandard } from 'ata-validator/compiled-standard';\n`)
   if (wrappers.bareRich) s.prepend(`import { bareRich as __ataBareRich } from 'ata-validator/compiled-bare-rich';\n`)
   if (wrappers.bare) s.prepend(`import { bareVerdict as __ataBareVerdict, barePlain as __ataBarePlain } from 'ata-validator/compiled-bare';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the

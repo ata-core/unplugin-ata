@@ -171,6 +171,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `bunTarget` | from `compile.aot` | Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside each module compiled from the globs: the schema as a type and a typed `parse(text)`, with the module answering every check. See [Bun, compiled ahead of time](#bun-compiled-ahead-of-time). Needs ata-validator 1.61.0. |
 | `verify` | `'ci'` | Hold every validator compiled away against the runtime on generated documents at the end of the build, and fail the build on a disagreement. `'ci'` runs it where the `CI` environment variable is set, `true` everywhere, a number that many documents a schema (50 for `true`), `false` never. Needs ata-validator 1.61.0; with an older one the default does nothing. |
 | `report` | `true` | At the end of the build, log how many validators were compiled away and every `new Validator(...)` kept on the runtime, with file, line and reason. See [the report](#the-report-what-stayed-on-the-runtime-and-why). |
+| `standardConsumers` | `[]` | Packages, besides the ones the build knows, whose imported functions take a validator and read only its `~standard`; a validator handed only to those takes the Standard-only wrapper. See below. |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what every replaceable call would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
 ## compileAway: keep `new Validator`, drop the compiler
@@ -388,6 +389,24 @@ What the consumer does with the value is not read: it gets `validate()`,
 calling anything else on the compiled wrapper throws a TypeError rather than
 answering differently. A use in the file itself that reads a property,
 assigns, returns or exports the validator keeps the runtime.
+
+A consumer the build knows reads `~standard` and nothing else, and an issue is
+a message and a path. A validator handed only to such a consumer, and never
+called by the file's own code, takes the wrapper that carries `~standard`
+alone (`ata-validator/compiled-standard`, ata-validator 1.61.3 on), on a module
+that writes its errors as a message and a path in schema order: no error
+pipeline in the bundle. The consumers the build knows are the functions a file
+imports from `@hono/standard-validator`, `hono-openapi`, the TanStack Form
+packages and `@orpc/server` or `@orpc/contract`, called directly or as a member
+of a namespace import; `standardConsumers: ['my-router']` adds packages. A
+method on an object the code built itself (`app.post(..., { body: v })`) is a
+handover the build cannot read, and takes the wrapper with errors as before.
+The Hono route above, bundled for Cloudflare Workers with esbuild and gzipped:
+7.7 KB for Hono alone, 66.7 KB with the runtime, 21.0 KB with the wrapper with
+errors, 12.2 KB with this one (ata-validator 1.61.3, the plugin's next release).
+The issues are the runtime's, held issue for issue in
+`test/compile-away-standard.test.js`, and the same requests get the same
+responses from both builds.
 
 Any other option (`new Validator(schema, { coerceTypes: true })`), a schema
 built at run time, or an instance passed around in those other ways stays as
