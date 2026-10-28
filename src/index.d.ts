@@ -37,6 +37,12 @@ export interface Options {
    */
   report?: boolean
   /**
+   * Packages, besides the ones the plugin knows, whose imported functions take
+   * a validator and read only its `~standard`. A validator handed only to those
+   * takes the wrapper that carries `~standard` alone.
+   */
+  standardConsumers?: string[]
+  /**
    * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
    * each module compiled from the `schemas` globs: the schema as a TypeScript
    * type, the module's functions with the type on them, and a typed

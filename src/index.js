@@ -129,8 +129,8 @@ export const unpluginFactory = (userOptions = {}) => {
       // Under the ahead-of-time compile the compiled modules are virtual .js
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
-      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual })
-      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kept })
+      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers })
+      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },
 
@@ -162,14 +162,20 @@ export const unpluginFactory = (userOptions = {}) => {
       session.verifying.clear()
       if (userOptions.report === false || userOptions.compileAway === false) return
       let replaced = 0
+      const kinds = { standard: 0, verdict: 0, plain: 0, errors: 0 }
       const kept = []
       for (const [file, r] of session.report) {
         replaced += r.replaced
+        if (r.kinds) for (const k of Object.keys(kinds)) kinds[k] += r.kinds[k] || 0
         for (const k of r.kept) kept.push(`${path.relative(session.root || process.cwd(), file)}:${k.line ?? '?'} ${k.reason}`)
       }
       session.report.clear()
       if (replaced === 0 && kept.length === 0) return
-      session.logger?.info?.(`[unplugin-ata] compileAway: ${replaced} validator${replaced === 1 ? '' : 's'} compiled at build time${kept.length ? `, ${kept.length} kept on the runtime` : ', the runtime compiler is out of the bundle'}`)
+      // What each compiled validator carries, so a reader can tell whether the
+      // bundle holds an error pipeline and for which calls.
+      const parts = [[kinds.standard, 'through ~standard alone'], [kinds.verdict, 'the verdict alone'], [kinds.plain, 'plain errors'], [kinds.errors, "ata's errors"]].filter(([n]) => n > 0).map(([n, what]) => `${n} ${what}`)
+      const breakdown = parts.length > 1 ? ` (${parts.join(', ')})` : ''
+      session.logger?.info?.(`[unplugin-ata] compileAway: ${replaced} validator${replaced === 1 ? '' : 's'} compiled at build time${breakdown}${kept.length ? `, ${kept.length} kept on the runtime` : ', the runtime compiler is out of the bundle'}`)
       for (const line of kept) session.logger?.warn?.(`[unplugin-ata] kept on the runtime: ${line}`)
     },
 

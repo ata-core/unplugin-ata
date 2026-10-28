@@ -95,6 +95,24 @@ describe('compileAway with a Standard Schema consumer', { skip: can ? false : 'a
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  it('takes standardConsumers from the plugin options, end to end', async () => {
+    const esbuild = await import('esbuild')
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unplugin-ata-mine-'))
+    const entry = path.join(root, 'mine-entry.mjs')
+    await fs.writeFile(entry, "import { Validator } from 'ata-validator'\nimport { route } from 'my-router'\n" + `const user = new Validator(${SCHEMA})\nexport const check = route(user)\nexport const schema = ${SCHEMA}\n`)
+    const build = async (opts) => { const out = path.join(dir, 'out-' + (opts.standardConsumers ? 'named' : 'plain') + '.mjs'); await esbuild.build({ entryPoints: [entry], absWorkingDir: root, bundle: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', verify: false, report: false, ...opts })], logLevel: 'silent' }); return [await fs.readFile(out, 'utf8'), out] }
+    const [plain] = await build({})
+    assert.ok(plain.includes('docUrl'), 'an unknown package gets the wrapper with errors')
+    const [named, out] = await build({ standardConsumers: ['my-router'] })
+    assert.ok(!named.includes('docUrl') && !named.includes('items ## '), 'named in the options, the package gets the Standard-only wrapper')
+    const mod = await import(pathToFileURL(out).href)
+    const runtime = new Validator(mod.schema)['~standard']
+    const show = (r) => JSON.stringify('issues' in r ? r.issues.map((i) => [i.message, i.path.map((p) => p.key)]) : ['value', r.value])
+    for (const doc of [{ email: 'a@b.co', age: 20 }, { email: 'nope', age: 5 }]) assert.equal(show(mod.check(structuredClone(doc))), show(runtime.validate(structuredClone(doc))))
+    await fs.rm(entry, { force: true })
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it('keeps it on the runtime with an ata-validator that has no such wrapper', () => {
     const out = compileAway(head + `const user = new Validator(${SCHEMA})\nexport const check = sValidator('json', user)\n`, file, { ...opts, compiledStandardWrapper: false })
     assert.ok(out && !out.code.includes('__ataBareStandard'), 'falls back to the wrapper with ~standard')

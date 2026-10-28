@@ -873,6 +873,8 @@ export function compileAway(code, id, ata, options) {
   const modules = []
   const done = new Set()
   const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false, bareRich: false, standard: false }
+  // How many calls took each wrapper, for the build report.
+  const kinds = { standard: 0, verdict: 0, plain: 0, errors: 0 }
   let usesRuntime = false
   let usesSafeRe = false
   const resolverCalls = new Set()
@@ -974,6 +976,7 @@ export function compileAway(code, id, ata, options) {
     // reads only these of the module, so the rest is cut.
     if (standardOnly) {
       wrappers.standard = true
+      kinds.standard++
       const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
       placeModule(`__ataCompiled${index}`, src, false, `{ validate, isValid${DEFAULTS_EXPORT.test(src) && !useDefaults ? ', applyDefaults' : ''} }`)
       // The schema as written: `~standard.jsonSchema` hands it out as the runtime does.
@@ -989,6 +992,7 @@ export function compileAway(code, id, ata, options) {
     placeModule(`__ataCompiled${index}`, src, verdict, bare || bareRich ? `{ ${verdict ? '' : 'validate, '}isValid${fills ? ', applyDefaults' : ''} }` : undefined)
     if (bareRich) {
       wrappers.bareRich = true
+      kinds.errors++
       const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
       s.overwrite(expr.start, expr.end, `__ataBareRich(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${useDefaults})`)
       done.add(expr)
@@ -996,6 +1000,7 @@ export function compileAway(code, id, ata, options) {
     }
     if (bare) {
       wrappers.bare = true
+      if (verdict) kinds.verdict++; else kinds.plain++
       const useDefaults = /"useDefaults":false/.test(optionsArg) ? ', false' : ''
       s.overwrite(expr.start, expr.end, `${verdict ? '__ataBareVerdict' : '__ataBarePlain'}(__ataCompiled${index}${useDefaults})`)
       done.add(expr)
@@ -1003,6 +1008,7 @@ export function compileAway(code, id, ata, options) {
     }
     const wrap = verdict ? '__ataFromCompiledVerdict' : plain ? '__ataFromCompiledPlain' : object ? '__ataFromCompiledObject' : '__ataFromCompiled'
     if (verdict) wrappers.verdict = true; else if (plain) wrappers.plain = true; else if (object) wrappers.object = true; else wrappers.full = true
+    if (verdict) kinds.verdict++; else if (plain) kinds.plain++; else kinds.errors++
     // The verdict wrapper takes no richErrors option: errors are not read there.
     const arg = verdict && shape.plain ? optionsArg.replace(/"richErrors":false,?/, '').replace(/^\{\}$/, '') : optionsArg
     s.overwrite(expr.start, expr.end, `${wrap}(__ataCompiled${index}, ${JSON.stringify(compiledSchemaFor(schema))}${arg ? ', ' + arg : ''})`)
@@ -1074,5 +1080,5 @@ export function compileAway(code, id, ata, options) {
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
   if (virtualImports.length) s.prepend(virtualImports.join(''))
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
-  return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size }
+  return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size, kinds }
 }
