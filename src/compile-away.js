@@ -413,31 +413,48 @@ function replaceableBinding(newExpr, ctx) {
   return { name, methods, handed, standardOnly }
 }
 
-// Whether a callee is a binding imported from a package that takes a Standard
-// Schema and reads only its `~standard`: the import itself, or a member of a
-// namespace import (`v.sValidator`).
+// Whether a callee belongs to a package that takes a Standard Schema and reads
+// only its `~standard`: the call chain's root is a binding imported from such
+// a package. The root is found through members, calls and constructions, and
+// through top-level constants of the file: `sValidator`, `sv.sValidator`,
+// `new Elysia().post`, `app.post` with `const app = new Elysia()`,
+// `publicProcedure.input` with `const t = initTRPC.create()` and
+// `const publicProcedure = t.procedure`.
 function isStandardConsumer (callee, ctx) {
   const c = ctx.standardConsumers
   if (!c || c.size === 0) return false
-  if (callee.type === 'Identifier') return c.has(callee.name) && ctx.declared.get(callee.name) === 1
-  if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier') {
-    return c.has(callee.object.name) && ctx.declared.get(callee.object.name) === 1
+  const root = (node, depth) => {
+    if (!node || depth > 24) return false
+    switch (node.type) {
+      case 'Identifier': {
+        if (ctx.declared.get(node.name) !== 1) return false
+        if (c.has(node.name)) return true
+        const k = ctx.constants.get(node.name)
+        return !!(k && k.init) && root(k.init, depth + 1)
+      }
+      case 'MemberExpression': case 'OptionalMemberExpression': return root(node.object, depth + 1)
+      case 'CallExpression': case 'OptionalCallExpression': case 'NewExpression': return root(node.callee, depth + 1)
+      case 'TSAsExpression': case 'TSSatisfiesExpression': case 'TSNonNullExpression': case 'ParenthesizedExpression': return root(node.expression, depth + 1)
+      case 'AwaitExpression': return root(node.argument, depth + 1)
+      default: return false
+    }
   }
-  return false
+  return root(callee, 0)
 }
 
 // Packages whose functions take a Standard Schema and read nothing of it but
-// `~standard`, where the call the validator is handed to is a function
-// imported from the package (`sValidator('json', v)`, `validator('json', v)`,
-// `useForm({ validators: { onChange: v } })`) or a member of a namespace
-// import (`os.input(v)`). A method on an object the code built itself
-// (`app.post(..., { body: v })`, `t.procedure.input(v)`) is not matched: the
-// build cannot see what reads it. `standardConsumers` in the plugin options
-// adds packages.
+// `~standard`: a router's validator middleware (`sValidator('json', v)`,
+// `validator('json', v)`), a form library (`useForm({ validators: { onChange:
+// v } })`), an RPC layer (`os.input(v)`, `publicProcedure.input(v)`) and
+// Elysia's hooks (`app.post(path, handler, { body: v })`). A package goes on
+// the list only when every function of it that takes a schema reads
+// `~standard` alone. `standardConsumers` in the plugin options adds packages.
 const STANDARD_CONSUMERS = [
   '@hono/standard-validator', 'hono-openapi',
   '@tanstack/form-core', '@tanstack/react-form', '@tanstack/vue-form', '@tanstack/solid-form', '@tanstack/angular-form',
   '@orpc/server', '@orpc/contract',
+  '@trpc/server',
+  'elysia',
 ]
 
 // Whether a use of the validator hands it to something else as a value: an

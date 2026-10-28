@@ -395,18 +395,34 @@ a message and a path. A validator handed only to such a consumer, and never
 called by the file's own code, takes the wrapper that carries `~standard`
 alone (`ata-validator/compiled-standard`, ata-validator 1.61.3 on), on a module
 that writes its errors as a message and a path in schema order: no error
-pipeline in the bundle. The consumers the build knows are the functions a file
-imports from `@hono/standard-validator`, `hono-openapi`, the TanStack Form
-packages and `@orpc/server` or `@orpc/contract`, called directly or as a member
-of a namespace import; `standardConsumers: ['my-router']` adds packages. A
-method on an object the code built itself (`app.post(..., { body: v })`) is a
-handover the build cannot read, and takes the wrapper with errors as before.
-The Hono route above, bundled for Cloudflare Workers with esbuild and gzipped:
-7.7 KB for Hono alone, 66.7 KB with the runtime, 21.0 KB with the wrapper with
-errors, 12.2 KB with this one (ata-validator 1.61.3, the plugin's next release).
+pipeline in the bundle. The build knows a consumer by the root of the call the
+validator is handed to: a function imported from `@hono/standard-validator`,
+`hono-openapi`, the TanStack Form packages, `@orpc/server` or
+`@orpc/contract`, `@trpc/server` or `elysia`, reached directly, through a
+namespace import, or through a chain of members, calls and top-level constants
+(`app.post(path, handler, { body: v })` with `const app = new Elysia()`;
+`publicProcedure.input(v)` with `const t = initTRPC.create()` and `const
+publicProcedure = t.procedure`). `standardConsumers: ['my-router']` adds
+packages; a chain whose root is not on the list takes the wrapper with errors
+as before.
+Bundled with esbuild and gzipped, ata-validator 1.61.3 and the plugin's next
+release against 0.11.1, one validator with an email field, a length, a range
+and a default:
+
+| app | framework alone | ata runtime | plugin 0.11.1 | plugin now |
+|---|---|---|---|---|
+| Hono 4.13 route, `sValidator`, for Workers | 7.7 KB | 66.7 KB | 21.0 KB | 12.2 KB |
+| Elysia 1.4 route, `{ body }` hook | 106.8 KB | 258.4 KB | 120.1 KB | 110.1 KB |
+| tRPC 11 procedure, `.input()` | 4.6 KB | 156.1 KB | 18.0 KB | 7.8 KB |
+
 The issues are the runtime's, held issue for issue in
-`test/compile-away-standard.test.js`, and the same requests get the same
-responses from both builds.
+`test/compile-away-standard.test.js`, and the Hono and Elysia apps above answer
+the same requests with the same responses from both builds. tRPC is the one
+consumer where the runtime and a compiled wrapper differ, and they did before
+this change: tRPC looks for a `parse()` method before `~standard`, finds the
+runtime's, and reports an invalid input through the error that method throws;
+a compiled wrapper has no `parse()`, so tRPC reads `~standard` and the error
+carries `issues`, as it does for any Standard Schema.
 
 Any other option (`new Validator(schema, { coerceTypes: true })`), a schema
 built at run time, or an instance passed around in those other ways stays as

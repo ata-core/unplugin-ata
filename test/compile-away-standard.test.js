@@ -58,6 +58,43 @@ describe('compileAway with a Standard Schema consumer', { skip: can ? false : 'a
     assert.ok(named && named.code.includes('__ataBareStandard'), 'standardConsumers adds a package')
   })
 
+  it('follows a call chain to its import: Elysia hooks and tRPC procedures', () => {
+    const elysia = "import { Validator } from 'ata-validator'\nimport { Elysia } from 'elysia'\n" + `const user = new Validator(${SCHEMA})\nconst app = new Elysia()\nexport default app.post('/users', ({ body }) => body, { body: user })\n`
+    let out = compileAway(elysia, file, opts)
+    assert.ok(out && out.code.includes('__ataBareStandard('), 'app.post with const app = new Elysia(): ' + (out && out.code.slice(0, 300)))
+    const inline = "import { Validator } from 'ata-validator'\nimport { Elysia } from 'elysia'\n" + `const user = new Validator(${SCHEMA})\nexport default new Elysia().get('/', () => 1).post('/users', ({ body }) => body, { body: user })\n`
+    out = compileAway(inline, file, opts)
+    assert.ok(out && out.code.includes('__ataBareStandard('), 'a chain on new Elysia()')
+    const trpc = "import { Validator } from 'ata-validator'\nimport { initTRPC } from '@trpc/server'\n" + `const user = new Validator(${SCHEMA})\nconst t = initTRPC.create()\nconst publicProcedure = t.procedure\nexport const create = publicProcedure.input(user).mutation(({ input }) => input)\n`
+    out = compileAway(trpc, file, opts)
+    assert.ok(out && out.code.includes('__ataBareStandard('), 'publicProcedure.input with const t = initTRPC.create(): ' + (out && out.code.slice(0, 300)))
+    // A chain whose root is not a known consumer: Hono's own app.post.
+    const hono = "import { Validator } from 'ata-validator'\nimport { Hono } from 'hono'\n" + `const user = new Validator(${SCHEMA})\nconst app = new Hono()\nexport default app.post('/users', user)\n`
+    out = compileAway(hono, file, opts)
+    assert.ok(out && !out.code.includes('__ataBareStandard(') && out.code.includes('__ataFromCompiledObject('), 'unknown root keeps the wrapper with errors')
+  })
+
+  it('answers as the runtime through an Elysia hook', async () => {
+    const esbuild = await import('esbuild')
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unplugin-ata-elysia-'))
+    const entry = path.join(root, 'elysia-entry.mjs')
+    await fs.writeFile(entry, "import { Validator } from 'ata-validator'\nimport { Elysia } from 'elysia'\n" + `const user = new Validator(${SCHEMA})\nexport const app = new Elysia().post('/users', ({ body }) => body, { body: user })\nexport const schema = ${SCHEMA}\n`)
+    const out = path.join(dir, 'out.mjs')
+    await esbuild.build({ entryPoints: [entry], absWorkingDir: root, bundle: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', verify: false, report: false })], logLevel: 'silent' })
+    const src = await fs.readFile(out, 'utf8')
+    assert.ok(!src.includes('items ## ') && !src.includes('docUrl'), 'the build carries the runtime or the error pipeline')
+    const mod = await import(pathToFileURL(out).href)
+    const runtime = new Validator(mod.schema)['~standard']
+    for (const doc of [{ email: 'a@b.co', age: 20 }, { email: 'nope', age: 5 }, {}]) {
+      const got = await mod.app.handle('/users', structuredClone(doc))
+      const r = runtime.validate(structuredClone(doc))
+      if ('issues' in r) assert.deepEqual(got, { status: 422, issues: r.issues })
+      else assert.deepEqual(got, { status: 200, body: r.value })
+    }
+    await fs.rm(entry, { force: true })
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it('keeps it on the runtime with an ata-validator that has no such wrapper', () => {
     const out = compileAway(head + `const user = new Validator(${SCHEMA})\nexport const check = sValidator('json', user)\n`, file, { ...opts, compiledStandardWrapper: false })
     assert.ok(out && !out.code.includes('__ataBareStandard'), 'falls back to the wrapper with ~standard')
