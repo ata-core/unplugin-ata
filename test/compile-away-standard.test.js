@@ -4,7 +4,7 @@
 // pipeline in the bundle. The decision rules first, then the built output
 // against the runtime's `~standard`, issue for issue.
 
-import { describe, it } from 'node:test'
+import { describe, it, before } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -27,7 +27,26 @@ const SCHEMA = "{ type: 'object', required: ['email', 'age'], additionalProperti
 const head = "import { Validator } from 'ata-validator'\nimport { sValidator } from '@hono/standard-validator'\n"
 const opts = { ...ata, compiledStandard: true, compiledStandardWrapper: can, compiledObject: true, compiledBare: true, compiledBareRich: true, compiledVerdict: true, compiledPlain: true }
 
+// The consumers the built entries import, as stand-ins with the one thing
+// that matters here: each reads `~standard` of the schema it is given and
+// nothing else. Written under the fixture's own node_modules before the
+// tests, so a checkout has them without a tracked node_modules.
+const STUBS = {
+  '@hono/standard-validator': "export function sValidator (target, schema) {\n  return (value) => schema['~standard'].validate(value)\n}\n",
+  elysia: "export class Elysia {\n  constructor () { this.routes = new Map() }\n  post (path, handler, hooks) { this.routes.set(path, { handler, hooks }); return this }\n  async handle (path, body) {\n    const r = this.routes.get(path)\n    const out = r.hooks.body['~standard'].validate(body)\n    return 'issues' in out ? { status: 422, issues: out.issues } : { status: 200, body: r.handler({ body: out.value }) }\n  }\n}\n",
+  'my-router': "export const route = (schema) => (value) => schema['~standard'].validate(value)\n",
+}
+
 describe('compileAway with a Standard Schema consumer', { skip: can ? false : 'ata-validator without compiled-standard' }, () => {
+  before(async () => {
+    for (const [name, code] of Object.entries(STUBS)) {
+      const dir = path.join(root, 'node_modules', name)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name, version: '0.0.0-test', type: 'module', main: 'index.js', exports: './index.js' }) + '\n')
+      await fs.writeFile(path.join(dir, 'index.js'), code)
+    }
+  })
+
   it('takes the Standard-only wrapper and a plain-errors module', () => {
     const out = compileAway(head + `const user = new Validator(${SCHEMA})\nexport const check = sValidator('json', user)\n`, file, opts)
     assert.ok(out, 'nothing was replaced')
