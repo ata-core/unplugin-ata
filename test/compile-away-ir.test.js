@@ -104,14 +104,16 @@ describe('compile-away, ir option', { skip: !ata.ir && 'the installed ata-valida
   })
 
   it('a schema the IR refuses keeps the existing path', async () => {
-    // A custom vocabulary: the IR declines ("ir: ..."), the existing path still compiles or keeps the runtime.
-    const code = `import { Validator } from 'ata-validator'\nconst v = new Validator({ $schema: 'https://json-schema.org/draft/2020-12/schema', $vocabulary: { 'https://json-schema.org/draft/2020-12/vocab/core': true }, type: 'string' })\nexport const run = (d) => v.validate(d)\n`
+    // A custom error message: a module cannot carry it, so the module writer
+    // declines ("ir: ..."), and the existing path compiles or keeps the runtime.
+    const schema = "{ type: 'object', properties: { name: { type: 'string', minLength: 2, errorMessage: 'two letters at least' } } }"
+    const code = `import { Validator } from 'ata-validator'\nconst v = new Validator(${schema})\nexport const run = (d) => v.validate(d)\n`
     let threw = null
-    try { ata.ir.specialize({ $vocabulary: { 'https://json-schema.org/draft/2020-12/vocab/core': true }, type: 'string' }) } catch (e) { threw = e.message }
+    try { ata.ir.specialize({ type: 'object', properties: { name: { type: 'string', minLength: 2, errorMessage: 'two letters at least' } } }) } catch (e) { threw = e.message }
     assert.match(String(threw), /^ir: /, 'the IR declines this schema')
     const { out, rewritten, original } = await load(code, { ir: true })
     assert.ok(!out || !/ata-validator\/kernels/.test(out.code))
-    for (const d of ['a', 1]) assert.equal(rewritten.run(d).valid, original.run(d).valid)
+    for (const d of [{ name: 'a' }, { name: 'ab' }, { name: 1 }]) assert.equal(JSON.stringify(rewritten.run(d)), JSON.stringify(original.run(d)))
   })
 
   it('a validator handed over as a value keeps the existing path', async () => {
