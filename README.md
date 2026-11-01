@@ -1,15 +1,10 @@
 # @ata-project/unplugin
 
-Compiles JSON Schema files into self-contained [ata-validator](https://ata-validator.com) modules at build time, with TypeScript declarations, in Vite, Webpack, Rollup, Rolldown, esbuild, Rspack and Bun. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
+Compiles [ata-validator](https://ata-validator.com) at build time, in Vite, Webpack, Rollup, Rolldown, esbuild, Rspack and Bun. One plugin, built on [unplugin](https://github.com/unjs/unplugin).
 
-The generated module imports nothing. A small schema compiles to about 1.3 KB gzipped and a ten-field one to about 2.6 KB, full error detail included, on ata-validator 1.36.0; the module exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs.
+Each `new Validator(schema)` in your code whose schema the build can read becomes a compiled validator that gives the same answers, errors and filled defaults, and the compiler stays out of the page. Your code does not change. An order form with six fields, its errors read on submit, goes from 55.2 KB gzipped on the runtime to 4.2 KB, and on a throttled phone profile is ready in 364 ms instead of 764 (ata-validator 1.63.0 and this plugin's 0.12.0; the measurements are in [`ir`](#ir-a-smaller-compiled-validator) and in ata-validator's README). See [compileAway](#compileaway-keep-new-validator-drop-the-compiler).
 
-Schemas can be authored as `.json`, `.js` or `.ts`.
-
-It also compiles away `new Validator(schema)` in your own code wherever the schema
-is known at build time and the result is the same, so the runtime compiler stays
-out of the bundle: for the test entry, 122.5 KB gzipped becomes 16.7 KB. See
-[compileAway](#compileaway-keep-new-validator-drop-the-compiler).
+It also compiles JSON Schema files into self-contained modules with TypeScript declarations. Such a module imports nothing; a small schema compiles to about 1.3 KB gzipped and a ten-field one to about 2.6 KB, full error detail included, on ata-validator 1.36.0. It exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs. Schemas can be authored as `.json`, `.js` or `.ts`.
 
 ## Install
 
