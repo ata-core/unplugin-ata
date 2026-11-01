@@ -901,6 +901,22 @@ export function compileAway(code, id, ata, options) {
       if (extra === NOT_STATIC) continue
       const schema = staticValue(call.arguments[0], ctx)
       if (schema === NOT_STATIC || schema === null || typeof schema !== 'object' || Array.isArray(schema)) continue
+      // With ata-validator/ir (the `ir` option): a module with plain errors. A
+      // resolver reads keyword, instancePath, params and message of each
+      // error, in order, and those are the same in the plain shape, which
+      // leaves the error enrichment out of the bundle.
+      if (options && options.ir && ata.ir && !virtual) {
+        let irSrc = null
+        try { irSrc = ata.ir.specialize(schema, { richErrors: false }) } catch { irSrc = null }
+        if (irSrc) {
+          const index = modules.length
+          placeIR(index, irSrc, false)
+          s.overwrite(call.start, call.end, `__ataCompiledResolver(__ataCompiled${index}${extra})`)
+          resolverCalls.add(call)
+          done.add(call)
+          continue
+        }
+      }
       let src = null
       try { src = compiledModuleFor(schema, { format: 'esm', order: true }) } catch { src = null }
       if (!src || !src.includes('function _ataOrder(')) continue
