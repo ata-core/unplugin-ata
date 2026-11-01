@@ -506,23 +506,29 @@ errors with every field in the same order, rich or plain, and fills the same
 defaults; the helpers it needs come from `ata-validator/kernels`, imported once
 however many validators a bundle has. Options other than `richErrors`,
 `useDefaults` and `assertFormat`, and schemas the IR does not cover (custom
-keywords or formats, `$vocabulary`, and on SchemaStore 111 of the 492 schemas
-that have sample documents), take the path above.
+keywords or formats, `$vocabulary`, a `$ref` into another document; on
+SchemaStore 48 of the 492 schemas that have sample documents), take the path
+above.
 
 Measured with esbuild (minified, gzip level 9) on form schemas with formats,
 patterns and rich errors read:
 
 | validators in the bundle | compileAway | compileAway, `ir: true` |
 |---|---|---|
-| 1 | 11.0 KB | 4.2 KB |
-| 3 | 12.7 KB | 5.2 KB |
+| 1 | 11.0 KB | 4.1 KB |
+| 3 | 12.7 KB | 5.3 KB |
 | 10 | 17.7 KB | 7.3 KB |
+
+On the 436 SchemaStore schemas both paths compile, one validator per bundle,
+the `ir: true` bundle is 0.46 of the other at the median (0.33 to 0.58 from
+the 10th to the 90th percentile) and never larger: 10.2 MB to 5.0 MB in all.
 
 Validation speed does not change: over six interleaved runs on the one-form
 bundle, the median difference was 1.6% faster on a valid document, 0.3% slower
 with the errors of an invalid one read, and 0.5% faster for `isValidObject()`.
-The bundles were run on 33000 generated documents and agreed with the runtime
-on every one.
+The form bundles were run on 33000 generated documents and the SchemaStore
+ones on 14119 sample and mutated documents; every error list matched the
+runtime's, field for field and in order.
 Needs an ata-validator with the `ata-validator/ir` entry; with an older one the
 option does nothing.
 
