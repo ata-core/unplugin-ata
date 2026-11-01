@@ -47,8 +47,9 @@ export interface Options {
    * with ata-validator/ir instead: same verdicts, errors and defaults, a
    * smaller module, and helpers shared across a bundle through
    * ata-validator/kernels. A schema or option the IR does not cover keeps the
-   * existing path. Needs an ata-validator with the `ata-validator/ir` entry.
-   * @default false
+   * existing path. Needs an ata-validator with the `ata-validator/ir` entry;
+   * with an older one it does nothing. `false` keeps the existing path.
+   * @default true
    */
   ir?: boolean
   /**

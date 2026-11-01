@@ -24,10 +24,11 @@ const root = path.join(here, 'fixtures', 'compile-away')
 const entry = path.join(root, 'entry.mjs')
 const options = { schemas: 'none/*.json', compileAway: true }
 
-// A string only the runtime compiler and the interpreter contain: the
-// uniqueItems message. The fixture schema does not use uniqueItems, so a build
-// that carries it carries the runtime.
-const RUNTIME_MARKER = 'items ## '
+// A string only the runtime carries: a method name of its validator core,
+// which minification keeps. (The uniqueItems message used to serve, but the
+// helpers of ata-validator/kernels carry it too, and a bundler that does not
+// minify keeps unused ones.)
+const RUNTIME_MARKER = '_ensureCompiled'
 
 const DOCS = [
   { id: 1, name: 'a' },
@@ -96,7 +97,11 @@ describe('compileAway in every bundler', () => {
       // And one that reads errors, only ever called, the bare wrapper with ata's errors.
       const hasBareRich = await import('ata-validator/compiled-bare-rich').then(() => true, () => false)
       const want = hasObject ? ['ata-validator/compiled', hasBareRich ? 'ata-validator/compiled-bare-rich' : 'ata-validator/compiled-object', hasBare ? 'ata-validator/compiled-bare' : 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict']
-      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), want.sort())
+      // With ata-validator/ir (the `ir` option, on by default), every validator
+      // that is only called comes from it and imports the kernels; the one that
+      // validates JSON text keeps the full wrapper.
+      const hasIr = await import('ata-validator/ir').then(() => true, () => false)
+      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), (hasIr ? ['ata-validator/compiled', 'ata-validator/kernels'] : want).sort())
       await check(path.join(dir, 'out.mjs'))
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
@@ -324,7 +329,7 @@ describe('compileAway shares one error runtime when a module pays for it', { ski
     const src = path.join(dir, 'entry.mjs')
     await fs.writeFile(src, head + `const v = new Validator(${JSON.stringify(schema)})\nexport const validate = (x) => v.validate(x)\n`)
     const out = path.join(dir, 'out.mjs')
-    await esbuild.build({ entryPoints: [src], absWorkingDir: here, nodePaths: [path.join(here, '..', 'node_modules')], bundle: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', compileAway: true, sharedErrors: true })], logLevel: 'silent' })
+    await esbuild.build({ entryPoints: [src], absWorkingDir: here, nodePaths: [path.join(here, '..', 'node_modules')], bundle: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', compileAway: true, sharedErrors: true, ir: false })], logLevel: 'silent' })
     const text = await fs.readFile(out, 'utf8')
     assert.equal(text.split('function __ataSafeRegex').length - 1, 1, 'one copy of the pattern engine, the runtime\'s')
     const mod = await import(pathToFileURL(out).href)
@@ -343,7 +348,7 @@ describe('compileAway shares one error runtime when a module pays for it', { ski
     const sizes = {}
     for (const sharedErrors of ['auto', false]) {
       const out = path.join(dir, `out-${sharedErrors}.mjs`)
-      await esbuild.build({ entryPoints: [src], absWorkingDir: here, nodePaths: [path.join(here, '..', 'node_modules')], bundle: true, minify: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', compileAway: true, sharedErrors })], logLevel: 'silent' })
+      await esbuild.build({ entryPoints: [src], absWorkingDir: here, nodePaths: [path.join(here, '..', 'node_modules')], bundle: true, minify: true, format: 'esm', platform: 'node', outfile: out, plugins: [unplugin.esbuild({ schemas: 'none/*.json', compileAway: true, sharedErrors, ir: false })], logLevel: 'silent' })
       const text = await fs.readFile(out, 'utf8')
       sizes[sharedErrors] = (await import('node:zlib')).gzipSync(text).length
       const mod = await import(pathToFileURL(out).href)

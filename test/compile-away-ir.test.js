@@ -12,6 +12,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { compileAway } from '../src/compile-away.js'
+import unplugin from '../src/index.js'
 import { __internal } from '../src/core.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -81,10 +82,19 @@ describe('compile-away, ir option', { skip: !ata.ir && 'the installed ata-valida
     assert.equal(out.code.match(/from 'ata-validator\/kernels'/g).length, 1)
   })
 
-  it('without the option, the existing path', async () => {
+  it('compileAway without the ir flag takes the existing path', async () => {
     const code = `import { Validator } from 'ata-validator'\nconst v = new Validator(${SCHEMAS.signup})\nexport const run = (d) => v.validate(d)\n`
     const { out } = await load(code, {})
     assert.doesNotMatch(out.code, /ata-validator\/kernels/)
+  })
+
+  it('the plugin uses the IR by default, and ir: false turns it off', async () => {
+    const esbuild = await import('esbuild')
+    const code = `import { Validator } from 'ata-validator'\nconst v = new Validator(${SCHEMAS.signup})\nexport const run = (d) => v.validate(d)\n`
+    const file = path.join(dir, `default-${n++}.mjs`); await fs.writeFile(file, code)
+    const build = async (opts) => (await esbuild.build({ entryPoints: [file], bundle: true, format: 'esm', write: false, external: ['ata-validator', 'ata-validator/*'], plugins: [unplugin.esbuild({ schemas: 'none/*.json', types: false, ...opts })], logLevel: 'silent' })).outputFiles[0].text
+    assert.match(await build({}), /from "ata-validator\/kernels"/)
+    assert.doesNotMatch(await build({ ir: false }), /ata-validator\/kernels/)
   })
 
   it('an option the IR does not reproduce keeps the existing path', async () => {
