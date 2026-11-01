@@ -43,6 +43,15 @@ export interface Options {
    */
   standardConsumers?: string[]
   /**
+   * Compile a validator that is only called (`validate()`, `isValidObject()`)
+   * with ata-validator/ir instead: same verdicts, errors and defaults, a
+   * smaller module, and helpers shared across a bundle through
+   * ata-validator/kernels. A schema or option the IR does not cover keeps the
+   * existing path. Needs an ata-validator with the `ata-validator/ir` entry.
+   * @default false
+   */
+  ir?: boolean
+  /**
    * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
    * each module compiled from the `schemas` globs: the schema as a TypeScript
    * type, the module's functions with the type on them, and a typed

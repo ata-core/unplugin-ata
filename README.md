@@ -172,6 +172,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `verify` | `'ci'` | Hold every validator compiled away against the runtime on generated documents at the end of the build, and fail the build on a disagreement. `'ci'` runs it where the `CI` environment variable is set, `true` everywhere, a number that many documents a schema (50 for `true`), `false` never. Needs ata-validator 1.61.0; with an older one the default does nothing. |
 | `report` | `true` | At the end of the build, log how many validators were compiled away and every `new Validator(...)` kept on the runtime, with file, line and reason. See [the report](#the-report-what-stayed-on-the-runtime-and-why). |
 | `standardConsumers` | `[]` | Packages, besides the ones the build knows, whose imported functions take a validator and read only its `~standard`; a validator handed only to those takes the Standard-only wrapper. See below. |
+| `ir` | `false` | Compile validators that are only called with `ata-validator/ir`, a smaller module with the same results. See below. |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what every replaceable call would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
 ## compileAway: keep `new Validator`, drop the compiler
@@ -495,6 +496,35 @@ on 50 documents made from it, half with one rule broken, and a disagreement
 fails the build with the document. This is `ata verify` inside the bundler. It
 runs by default where the `CI` environment variable is set and not on local
 builds; `verify: true` runs it everywhere.
+
+### `ir: true`, a smaller compiled validator
+
+With `ir: true`, a validator the file only calls (`validate()`,
+`isValidObject()`, never handed to other code) is compiled by
+`ata-validator/ir` instead. Its module gives the same verdicts, the same
+errors with every field in the same order, rich or plain, and fills the same
+defaults; the helpers it needs come from `ata-validator/kernels`, imported once
+however many validators a bundle has. Options other than `richErrors`,
+`useDefaults` and `assertFormat`, and schemas the IR does not cover (custom
+keywords or formats, `$vocabulary`, and on SchemaStore 111 of the 492 schemas
+that have sample documents), take the path above.
+
+Measured with esbuild (minified, gzip level 9) on form schemas with formats,
+patterns and rich errors read:
+
+| validators in the bundle | compileAway | compileAway, `ir: true` |
+|---|---|---|
+| 1 | 11.0 KB | 4.2 KB |
+| 3 | 12.7 KB | 5.2 KB |
+| 10 | 17.7 KB | 7.3 KB |
+
+Validation speed does not change: over six interleaved runs on the one-form
+bundle, the median difference was 1.6% faster on a valid document, 0.3% slower
+with the errors of an invalid one read, and 0.5% faster for `isValidObject()`.
+The bundles were run on 33000 generated documents and agreed with the runtime
+on every one.
+Needs an ata-validator with the `ata-validator/ir` entry; with an older one the
+option does nothing.
 
 ## How it works
 

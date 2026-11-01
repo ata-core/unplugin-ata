@@ -210,6 +210,13 @@ async function loadAta() {
   // Whether the wrapper carries Standard Schema (`~standard`), from
   // ata-validator 1.60.0: then a validator handed to something that reads it
   // (a router's `body: v`, a form library) can be compiled away as well.
+  // The compiler built on one definition per keyword (ata-validator/ir),
+  // where the installed ata-validator has it: its modules import their
+  // helpers from ata-validator/kernels. Used only under the `ir` option.
+  let ir = null
+  if (canCompileAway) {
+    try { const m = await import('ata-validator/ir'); ir = typeof m.specialize === 'function' ? m : null } catch { ir = null }
+  }
   let compiledStandard = false
   if (canCompileAway) {
     try {
@@ -316,6 +323,7 @@ async function loadAta() {
     compiledStandardWrapper,
     compiledExtendChecks,
     compiledStandard,
+    ir,
     t,
   }
 }

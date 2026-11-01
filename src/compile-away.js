@@ -877,6 +877,19 @@ export function compileAway(code, id, ata, options) {
   const kinds = { standard: 0, verdict: 0, plain: 0, errors: 0 }
   let usesRuntime = false
   let usesSafeRe = false
+  // Under the `ir` option: the helpers of ata-validator/kernels the file's IR
+  // modules use, imported once under aliases.
+  const irKernels = new Set()
+  const placeIR = (index, src, verdictOnly) => {
+    const m = /^import \{([^}]*)\} from "ata-validator\/kernels"\n/.exec(src)
+    const body = pruneModule((m ? src.slice(m[0].length) : src).replace(/^export function /gm, 'function '), verdictOnly ? ['isValid'] : ['validate', 'isValid'])
+    // The helpers the pruned body still names (a verdict module drops the
+    // error constructor with the error procedures).
+    const names = (m ? m[1].split(',').filter(Boolean) : []).filter((n) => new RegExp(`(?<![\\w$.])${n}(?![\\w$])`).test(body))
+    for (const n of names) irKernels.add(n)
+    const alias = names.length ? `const ${names.map((n) => `${n} = __ataK_${n}`).join(', ')};\n` : ''
+    modules.push(`const __ataCompiled${index} = (() => {\n${alias}${body}\nreturn ${verdictOnly ? '{ isValidObject: isValid }' : '{ validate, isValidObject: isValid }'};\n})();\n`)
+  }
   const resolverCalls = new Set()
   if (resolverName) {
     for (const r of refs) {
@@ -949,6 +962,27 @@ export function compileAway(code, id, ata, options) {
     // them keeps the runtime.
     const plain = shape.plain && !verdict && !standardOnly
     if (plain && !noJson(binding.methods)) { keep(expr, 'richErrors: false with validateJSON() or isValidJSON(), which the plain compiled wrapper does not have'); continue }
+    // The `ir` option: a validator only called, never handed over, with no
+    // option but richErrors, useDefaults and assertFormat, becomes a module
+    // of the IR compiler and an object with the same two methods. A schema
+    // the IR does not cover ("ir: ...") takes the path below.
+    if (options && options.ir && ata.ir && !virtual && !standardOnly && !binding.handed && [...binding.methods].every((m) => m === 'validate' || m === 'isValidObject')) {
+      let opts = null
+      try { opts = optionsArg ? JSON.parse(optionsArg) : {} } catch { opts = null }
+      if (opts && Object.keys(opts).every((k) => (k === 'richErrors' || k === 'useDefaults' || k === 'assertFormat') && typeof opts[k] === 'boolean')) {
+        const verdictOnly = [...binding.methods].every((m) => m === 'isValidObject')
+        let irSrc = null
+        try { irSrc = ata.ir.specialize(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false, verdict: verdictOnly }) } catch { irSrc = null }
+        if (irSrc) {
+          const index = modules.length
+          placeIR(index, irSrc, verdictOnly)
+          if (verdictOnly) kinds.verdict++; else if (opts.richErrors === false) kinds.plain++; else kinds.errors++
+          s.overwrite(expr.start, expr.end, `__ataCompiled${index}`)
+          done.add(expr)
+          continue
+        }
+      }
+    }
     let src = null
     // A verdict wrapper only ever calls isValid: the module is written without
     // its error collector (`verdictOnly`, 1.61.1 on; older versions ignore it).
@@ -1077,6 +1111,7 @@ export function compileAway(code, id, ata, options) {
   if (wrappers.bare) s.prepend(`import { bareVerdict as __ataBareVerdict, barePlain as __ataBarePlain } from 'ata-validator/compiled-bare';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
+  if (irKernels.size) s.prepend(`import { ${[...irKernels].sort().map((n) => `${n} as __ataK_${n}`).join(', ')} } from 'ata-validator/kernels';\n`)
   if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
   if (virtualImports.length) s.prepend(virtualImports.join(''))
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
