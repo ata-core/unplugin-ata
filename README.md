@@ -529,8 +529,8 @@ with the errors of an invalid one read, and 0.2% slower for `isValidObject()`.
 The form bundles were run on 33000 generated documents and the SchemaStore
 ones on 14119 sample and mutated documents; every error list matched the
 runtime's, field for field and in order.
-Needs an ata-validator with the `ata-validator/ir` entry; with an older one the
-option does nothing.
+Needs ata-validator 1.63.0 or later; with an older one the option does
+nothing.
 
 ## How it works
 
