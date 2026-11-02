@@ -311,6 +311,9 @@ async function loadAta() {
     verify: build.verify && typeof build.verify.verifySource === 'function' ? build.verify : null,
     toStandaloneModule: build.toStandaloneModule,
     compiledModuleFor: canCompileAway ? build.compiledModuleFor : null,
+    // The runtime's generated defaults pass as source (ata-validator 1.63.0),
+    // which the IR's module writer takes where its own fill declines.
+    defaultsSource: canCompileAway && typeof build.defaultsSource === 'function' ? build.defaultsSource : null,
     compiledSchemaFor: canCompileAway ? build.compiledSchemaFor : null,
     // The Validator options fromCompiled() reproduces, from ata-validator
     // 1.37.0; before it, only calls without options are replaced.

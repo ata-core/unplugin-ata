@@ -907,7 +907,7 @@ export function compileAway(code, id, ata, options) {
       // leaves the error enrichment out of the bundle.
       if (options && options.ir && ata.ir && !virtual) {
         let irSrc = null
-        try { irSrc = ata.ir.specialize(schema, { richErrors: false, verdict: true }) } catch { irSrc = null }
+        try { irSrc = ata.ir.specialize(schema, { richErrors: false, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
         if (irSrc) {
           const index = modules.length
           placeIR(index, irSrc, false)
@@ -994,7 +994,10 @@ export function compileAway(code, id, ata, options) {
         // samples that made a valid validate() 1.46x the previous module at
         // the median and the first call 0.38 against 0.21 ms, for about 7%
         // more bytes (8.2 against 7.6 KB gzipped at the median).
-        try { irSrc = ata.ir.specialize(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false, verdict: true }) } catch { irSrc = null }
+        // fillSource: the runtime's generated defaults pass, written in where
+        // the IR's own fill declines (on SchemaStore 0.56 of the time on the
+        // 22 schemas it changes, slower on none).
+        try { irSrc = ata.ir.specialize(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
         if (irSrc) {
           const index = modules.length
           placeIR(index, irSrc, verdictOnly)
