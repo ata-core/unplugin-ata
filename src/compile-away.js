@@ -907,7 +907,7 @@ export function compileAway(code, id, ata, options) {
       // leaves the error enrichment out of the bundle.
       if (options && options.ir && ata.ir && !virtual) {
         let irSrc = null
-        try { irSrc = ata.ir.specialize(schema, { richErrors: false }) } catch { irSrc = null }
+        try { irSrc = ata.ir.specialize(schema, { richErrors: false, verdict: true }) } catch { irSrc = null }
         if (irSrc) {
           const index = modules.length
           placeIR(index, irSrc, false)
@@ -988,7 +988,13 @@ export function compileAway(code, id, ata, options) {
       if (opts && Object.keys(opts).every((k) => (k === 'richErrors' || k === 'useDefaults' || k === 'assertFormat') && typeof opts[k] === 'boolean')) {
         const verdictOnly = [...binding.methods].every((m) => m === 'isValidObject')
         let irSrc = null
-        try { irSrc = ata.ir.specialize(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false, verdict: verdictOnly }) } catch { irSrc = null }
+        // Verdict functions always: validate() answers a valid document with
+        // them before it gathers any error, and without them that answer
+        // runs the error-gathering functions with no list. On SchemaStore's
+        // samples that made a valid validate() 1.46x the previous module at
+        // the median and the first call 0.38 against 0.21 ms, for about 7%
+        // more bytes (8.2 against 7.6 KB gzipped at the median).
+        try { irSrc = ata.ir.specialize(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false, verdict: true }) } catch { irSrc = null }
         if (irSrc) {
           const index = modules.length
           placeIR(index, irSrc, verdictOnly)
