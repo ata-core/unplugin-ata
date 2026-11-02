@@ -516,27 +516,30 @@ patterns and rich errors read:
 
 On the 654 SchemaStore schemas both paths compile away, one validator per
 bundle, the default bundle is 0.52 of the `ir: false` one at the median (0.38
-to 0.69 from the 10th to the 90th percentile), 14.8 MB to 8.4 MB in all. One
-is larger: hugo, by 2%.
+to 0.67 from the 10th to the 90th percentile) and larger on none, 14.8 MB to
+8.3 MB in all.
 
 Each module carries functions that answer a valid document without gathering
 errors, which `validate()` runs first. They cost about 6% of the module and
 made `validate()` on valid documents about 20% faster at the median across
-SchemaStore. On the one-form bundle the two paths are within 1% of each other
-on valid and invalid documents and on `isValidObject()`.
+SchemaStore. Where the IR declines a schema's default fill, the module
+carries ata-validator's generated one rather than the shared interpreted
+pass. On the one-form bundle the two paths are within 1% of each other on
+valid and invalid documents and on `isValidObject()`.
 
 Across SchemaStore's sample documents, each call on a freshly copied
-document: `validate()` with the errors of an invalid document read takes 0.65
-of the `ir: false` time at the median, and is faster on 113 of 116 schemas
-and slower on none. `isValidObject()` on a valid document takes 1.06 of it at
-the median (0.66 to 2.18 from the 10th to the 90th percentile); on a few
-schemas with many defaults to fill it takes 4 to 8 times as long. Loaded
-fresh in a new process, bundled, with its first ten calls, the default module
-took 0.50 of the time at the median and was faster on 47 of 48 schemas
-sampled, mostly because there is less to load. The form bundles were run on
-42000 generated documents and the SchemaStore modules on their sample and
-mutated documents; every error list matched the runtime's, field for field
-and in order.
+document, all schemas in one process: `validate()` with the errors of an
+invalid document read takes 0.64 of the `ir: false` time at the median, and
+is faster on 114 of 116 schemas and slower on none. `isValidObject()` on a
+valid document takes 1.03 of it at the median (0.63 to 1.94 from the 10th to
+the 90th percentile); the slowest, sil-kit's participant configuration,
+measured 6.3 times there and 1.9 times in a process of its own. Loaded fresh
+in a new process, bundled, with its first ten calls, the default module took
+0.49 of the time at the median and was faster on all 48 schemas sampled,
+mostly because there is less to load. The form bundles were run on 42000
+generated documents and the SchemaStore modules on their sample and mutated
+documents; every error list matched the runtime's, field for field and in
+order.
 Needs ata-validator 1.63.0 or later; with an older one the option does
 nothing.
 
