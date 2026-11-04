@@ -554,12 +554,10 @@ are the same either way, and the build log says which it chose.
 
 In a Vite + React application with ten six-field forms reading plain errors,
 the validators add 2.26 KB gzipped to the first load, against 5.35 KB as
-modules and 1.15 times what the same forms cost with valibot; with email and
-uri fields among them, 2.95 KB against 8.24 (valibot 2.11). Plans check email
-and uri with regular expressions that give the scanners' answers, on every
-string tested, in a third of the bytes. On a single form the build keeps the
-written module, which there is the smaller: 1.41 KB against valibot's 1.46.
- A plan is
+modules; with email and uri fields among them, 2.95 KB against 8.24. Plans
+check email and uri with regular expressions that give the scanners' answers
+on every string tested, in a third of the bytes. On a single form the build
+keeps the written module, which there is the smaller (1.41 KB). A plan is
 slower per call than a module (445 against 22 ns on a valid order form), so
 `table: false` keeps modules everywhere, and `table: true` takes plans
 wherever they cover the schema.
