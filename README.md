@@ -136,7 +136,10 @@ const r = createUserBody.validate(form)
 ```
 
 `openapi.validators.mjs` is plain source: one `new Validator(schema)` per
-operation with a JSON body, the schema from `operationSchemas` in
+operation with a JSON body, named after its `operationId` in camel case
+(`create-user` gives `createUserBody`; with no `operationId`, the method
+and path: `post /users` gives `postUsersBody`; two operations that would
+share a name stop the build with both named), the schema from `operationSchemas` in
 `ata-validator/openapi` (references into `components.schemas` kept,
 OpenAPI 3.0's `nullable` and boolean exclusive bounds read as 3.0 defines
 them). A server imports the same file and runs it on the runtime; the page's
@@ -148,6 +151,10 @@ gzipped to a Vite + React first load. `openapi.validators.d.mts` types each
 body (`CreateUserBody`) and validator. `validatorOptions` passes
 `richErrors`, `useDefaults` or `assertFormat` to every validator:
 `openapi: { file: 'openapi.json', validatorOptions: { richErrors: false } }`.
+Under `vite dev` an edit to the document writes the module again; under
+webpack's and Rollup's watch mode it is written again at the next build
+start. The guarantee holds when the server runs the same ata-validator
+version the page is built with.
 
 ## The `.schema.json` convention
 
@@ -578,8 +585,13 @@ nothing.
 A written module is fast and costs about 400 bytes gzipped a form. With
 `table: 'auto'` (the default) the build also writes each validator as a plan
 for one interpreter shared across the bundle, compares the two for the whole
-application, and takes the plans when the bundle comes out smaller; a schema
-the plans do not cover keeps its module. The verdicts, errors and defaults
+application, and takes the plans when that comparison says the bundle comes
+out smaller; a schema the plans do not cover keeps its module. The threshold
+was set on Vite + React builds of 1 to 10 forms, plain and rich, with and
+without format checks, where it never took the plans for the larger bundle.
+The comparison covers every source under the root: a repository that holds
+several applications under one root should give each its own `root`, or
+set `table` itself. The verdicts, errors and defaults
 are the same either way, and the build log says which it chose.
 
 In a Vite + React application with ten six-field forms reading plain errors,

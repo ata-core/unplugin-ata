@@ -284,7 +284,8 @@ export const unpluginFactory = (userOptions = {}) => {
 
       async handleHotUpdate(ctx) {
         const result = await session.compileIfMatching(ctx.file)
-        if (result && result.changed) {
+        // An OpenAPI document gives a list, one entry per document.
+        if (result && (Array.isArray(result) ? result.some((r) => r.changed) : result.changed)) {
           session.logger?.info?.(`[unplugin-ata] recompiled ${path.relative(session.root, ctx.file)}`)
         }
         return undefined

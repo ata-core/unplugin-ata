@@ -21,7 +21,7 @@ const DOC = {
   openapi: '3.0.3',
   paths: {
     '/users': { post: { operationId: 'createUser', requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/NewUser' } } } } } },
-    '/orders': { post: { requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { items: { type: 'array', items: { $ref: '#/components/schemas/Line' }, minItems: 1 }, coupon: { type: 'string', pattern: '^[A-Z0-9]{6}$', nullable: true } }, required: ['items'], additionalProperties: false } } } } } },
+    '/orders': { post: { operationId: 'place-order', requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { items: { type: 'array', items: { $ref: '#/components/schemas/Line' }, minItems: 1 }, coupon: { type: 'string', pattern: '^[A-Z0-9]{6}$', nullable: true } }, required: ['items'], additionalProperties: false } } } } } },
   },
   components: { schemas: {
     NewUser: { type: 'object', properties: { email: { type: 'string', format: 'email' }, name: { type: 'string', minLength: 2, maxLength: 50 }, age: { type: 'integer', minimum: 13, exclusiveMinimum: true }, website: { type: 'string', format: 'uri', nullable: true } }, required: ['email', 'name'], additionalProperties: false },
@@ -36,12 +36,13 @@ describe('openapi', { skip: !hasOpenAPI && 'the installed ata-validator has no a
     await fs.writeFile(file, JSON.stringify(DOC))
     const written = []
     const r = await compileOpenAPI('api.json', dir, async (f, s) => { written.push(f); await fs.writeFile(f, s); return true })
-    assert.deepEqual(r[0].operations, ['createUser', 'postOrders'])
+    assert.deepEqual(r[0].operations, ['createUser', 'placeOrder'])
     assert.deepEqual(written.map((f) => path.basename(f)), ['api.validators.mjs', 'api.validators.d.mts'])
     const dts = await fs.readFile(path.join(dir, 'api.validators.d.mts'), 'utf8')
     assert.match(dts, /export declare namespace CreateUser \{/)
     assert.match(dts, /export declare const createUserBody: \{ validate\(data: unknown\): Result<CreateUserBody>/)
-    assert.match(dts, /export declare const postOrdersBody/)
+    assert.match(dts, /export declare const placeOrderBody/)
+    assert.match(dts, /export declare namespace PlaceOrder \{/)
   })
   it('the server reads the module as it is, the page compiles it, and they agree', async () => {
     const src = await fs.readFile(path.join(dir, 'api.validators.mjs'), 'utf8')
@@ -51,7 +52,7 @@ describe('openapi', { skip: !hasOpenAPI && 'the installed ata-validator has no a
       assert.ok(out && !out.code.includes('new Validator('), 'every validator is compiled for the page')
       const f = path.join(dir, `page-${table}.mjs`); await fs.writeFile(f, out.code)
       const page = await import(pathToFileURL(f).href)
-      for (const name of ['createUserBody', 'postOrdersBody']) for (const d of DOCS) {
+      for (const name of ['createUserBody', 'placeOrderBody']) for (const d of DOCS) {
         const a = server[name].validate(structuredClone(d)); const b = page[name].validate(structuredClone(d))
         assert.equal(JSON.stringify([b.valid, b.errors]), JSON.stringify([a.valid, a.errors]), `${name}, table ${table}: ${JSON.stringify(d)}`)
         assert.equal(page[name].isValidObject(structuredClone(d)), server[name].isValidObject(structuredClone(d)))
