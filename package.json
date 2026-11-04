@@ -37,6 +37,11 @@
       "types": "./src/rspack.d.ts",
       "default": "./src/rspack.js"
     },
+    "./next": {
+      "types": "./src/next.d.ts",
+      "default": "./src/next.js"
+    },
+    "./turbopack": "./src/turbopack.cjs",
     "./core": "./src/core.js",
     "./package.json": "./package.json"
   },
