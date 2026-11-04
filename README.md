@@ -119,6 +119,36 @@ under webpack, against 67.5 and 58.3 KB for the runtime `Validator`. Under
 Turbopack by hand, the loader is `@ata-project/unplugin/turbopack` in
 `turbopack.rules`.
 
+## One OpenAPI document for the server and the page
+
+Point the plugin at the API's OpenAPI document (3.0 or 3.1; YAML needs the
+`yaml` package) and it writes the request body validators beside it:
+
+```js
+// vite.config.js
+ata({ openapi: 'openapi.json' })
+```
+
+```js
+// any page
+import { createUserBody } from './openapi.validators.mjs'
+const r = createUserBody.validate(form)
+```
+
+`openapi.validators.mjs` is plain source: one `new Validator(schema)` per
+operation with a JSON body, the schema from `operationSchemas` in
+`ata-validator/openapi` (references into `components.schemas` kept,
+OpenAPI 3.0's `nullable` and boolean exclusive bounds read as 3.0 defines
+them). A server imports the same file and runs it on the runtime; the page's
+build compiles each validator like any other, so the two check the same
+schema. On a nine-field signup operation the server running the file and the
+page running the compiled build disagreed on 0 of 50,000 generated
+documents, every error compared, and the page's validation added 3.78 KB
+gzipped to a Vite + React first load. `openapi.validators.d.mts` types each
+body (`CreateUserBody`) and validator. `validatorOptions` passes
+`richErrors`, `useDefaults` or `assertFormat` to every validator:
+`openapi: { file: 'openapi.json', validatorOptions: { richErrors: false } }`.
+
 ## The `.schema.json` convention
 
 Name a schema `user.schema.json` and import a typed validator by its name:

@@ -62,6 +62,14 @@ export interface Options {
    */
   table?: boolean | 'auto'
   /**
+   * OpenAPI documents (3.0 or 3.1; JSON, or YAML with the `yaml` package) to
+   * write request body validators for: `openapi.json` gives
+   * `openapi.validators.mjs` and `.d.mts` beside it, one `<operation>Body`
+   * validator per operation with a JSON body. The module is plain source a
+   * server can import as it is; a page's build compiles each validator.
+   */
+  openapi?: string | { file: string; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean; assertFormat?: boolean } } | Array<string | { file: string; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean; assertFormat?: boolean } }>
+  /**
    * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
    * each module compiled from the `schemas` globs: the schema as a TypeScript
    * type, the module's functions with the type on them, and a typed

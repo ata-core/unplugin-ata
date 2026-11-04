@@ -623,6 +623,10 @@ export async function compile(options = {}) {
   const results = await Promise.all(
     files.map((file) => compileOne(file, opts, root, api, null)),
   )
+  if (opts.openapi) {
+    const { compileOpenAPI } = await import('./openapi.js')
+    for (const r of await compileOpenAPI(opts.openapi, root, writeIfChanged)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, openapi: r })
+  }
   return { files, results }
 }
 
@@ -651,6 +655,11 @@ export function createSession(userOptions = {}) {
       const results = await Promise.all(
         files.map((file) => compileOne(file, options, session.root, api, session.logger)),
       )
+      // `openapi`: validators for a document's request bodies (src/openapi.js).
+      if (options.openapi) {
+        const { compileOpenAPI } = await import('./openapi.js')
+        for (const r of await compileOpenAPI(options.openapi, session.root, writeIfChanged)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, openapi: r })
+      }
       return { files, results }
     },
     // ata-validator itself, loaded once for every hook that needs it.
@@ -659,6 +668,10 @@ export function createSession(userOptions = {}) {
     },
     async compileIfMatching(file) {
       if (!file) return null
+      if (options.openapi) {
+        const docs = (Array.isArray(options.openapi) ? options.openapi : [options.openapi]).map((e) => path.resolve(session.root, typeof e === 'string' ? e : e.file))
+        if (docs.includes(path.resolve(file))) { const { compileOpenAPI } = await import('./openapi.js'); return compileOpenAPI(options.openapi, session.root, writeIfChanged) }
+      }
       const api = await (apiPromise ??= loadAta())
       const files = await resolveSchemaFiles(options.schemas, session.root)
       if (!files.some((f) => path.resolve(f) === path.resolve(file))) return null
