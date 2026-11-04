@@ -114,7 +114,7 @@ export default withAta({ /* your config */ }, { /* plugin options */ })
 ```
 
 On a Next.js 16 page with one order form that reads its errors, the
-validator adds 4.2 KB gzipped to the first load under Turbopack and 4.1 KB
+validator adds 4.2 KB gzipped to the first load under Turbopack and 4.6 KB
 under webpack, against 67.5 and 58.3 KB for the runtime `Validator`. Under
 Turbopack by hand, the loader is `@ata-project/unplugin/turbopack` in
 `turbopack.rules`.
@@ -508,11 +508,11 @@ above.
 Measured with esbuild (minified, gzip level 9) on form schemas with formats,
 patterns and rich errors read:
 
-| validators in the bundle | `ir: false` | `ir` (default) |
-|---|---|---|
-| 1 | 11.0 KB | 4.3 KB |
-| 3 | 12.7 KB | 5.6 KB |
-| 10 | 17.6 KB | 8.4 KB |
+| validators in the bundle | `ir: false` | `ir`, `table: false` | `ir`, `table: 'auto'` (default) |
+|---|---|---|---|
+| 1 | 11.0 KB | 4.3 KB | 4.3 KB (modules) |
+| 3 | 12.7 KB | 5.6 KB | 5.5 KB (plans) |
+| 10 | 17.6 KB | 8.4 KB | 5.8 KB (plans) |
 
 On the 654 SchemaStore schemas both paths compile away, one validator per
 bundle, the default bundle is 0.52 of the `ir: false` one at the median (0.38
