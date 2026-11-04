@@ -531,9 +531,13 @@ builds; `verify: true` runs it everywhere.
 
 ### `ir`, a smaller compiled validator
 
-By default (`ir: false` turns it off), a validator the file only calls (`validate()`,
-`isValidObject()`, never handed to other code) is compiled by
-`ata-validator/ir` instead. Its module gives the same verdicts, the same
+By default on ata-validator 1.63.1 and later (`ir: false` turns it off, `ir: true`
+takes it on any ata-validator that has the entry), a validator the file only
+calls (`validate()`, `isValidObject()`, never handed to other code) is compiled
+by `ata-validator/ir` instead. The default waits for 1.63.1 because its module
+writer is the one measured here: on 1.63.0 the modules were slower than the
+compiled ones on 129 of 438 SchemaStore schemas by a fifth or more; from 1.63.1
+on 51, and faster on 216 (warmed, against the schemas' own samples). Its module gives the same verdicts, the same
 errors with every field in the same order, rich or plain, and fills the same
 defaults; the helpers it needs come from `ata-validator/kernels`, imported once
 however many validators a bundle has. Options other than `richErrors`,

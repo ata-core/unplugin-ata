@@ -97,8 +97,9 @@ export const unpluginFactory = (userOptions = {}) => {
       // the bundle smaller (src/compile-away.js tablePays), compiled code
       // otherwise. A file the scan did not see keeps compiled code.
       session.tableDecision = false
-      if (userOptions.compileAway !== false && userOptions.ir !== false && (userOptions.table === undefined || userOptions.table === 'auto')) {
-        const api = await session.api()
+      const apiForTable = userOptions.compileAway !== false && userOptions.ir !== false ? await session.api() : null
+      if (apiForTable !== null && (userOptions.ir === true || apiForTable.irDefault) && (userOptions.table === undefined || userOptions.table === 'auto')) {
+        const api = apiForTable
         if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
           if (!session.scanned) { const sources = scanSources(session.root || process.cwd()); session.scanned = new Set(sources.map(([, id]) => path.resolve(id))); session.scannedSources = sources } else if (!session.scannedSources) session.scannedSources = scanSources(session.root || process.cwd())
           const { pays, saving, calls } = await tablePays(session.scannedSources, cachedApi(session, api))
@@ -146,7 +147,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableDecision === true && session.scanned && session.scanned.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir !== false })
+      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },

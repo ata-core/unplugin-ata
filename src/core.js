@@ -146,6 +146,15 @@ const DEFAULT_OPTIONS = {
   },
 }
 
+const IR_DEFAULT_MIN = '1.63.1'
+// Whether version `v` (a.b.c, a prerelease tag ignored) is at least `min`.
+function atLeast (v, min) {
+  if (typeof v !== 'string') return false
+  const a = v.split('-')[0].split('.').map(Number), b = min.split('.').map(Number)
+  for (let i = 0; i < 3; i++) { if ((a[i] || 0) > b[i]) return true; if ((a[i] || 0) < b[i]) return false }
+  return true
+}
+
 async function loadAta() {
   // Resolve ata-validator at runtime so peer-dep works cleanly across package managers.
   // Standalone codegen comes from the ata-validator/build entry: the instance
@@ -217,6 +226,15 @@ async function loadAta() {
   if (canCompileAway) {
     try { const m = await import('ata-validator/ir'); ir = typeof m.specialize === 'function' ? m : null } catch { ir = null }
   }
+  // Whether `ir` is on without being asked: from the ata-validator whose
+  // module writer inlines small checks and walks keys without an array
+  // (IR_DEFAULT_MIN). On 1.63.0 the modules it wrote were slower than the
+  // compiled ones on 129 of 438 SchemaStore schemas by a fifth or more
+  // (warmed, against their samples); from 1.63.1 on 51, and faster on 216.
+  // `ir: true` takes it on any ata-validator that has it.
+  let ataVersion = null
+  try { ataVersion = typeof api.version === 'function' ? api.version() : null } catch { ataVersion = null }
+  const irDefault = ir !== null && atLeast(ataVersion, IR_DEFAULT_MIN)
   let compiledStandard = false
   if (canCompileAway) {
     try {
@@ -327,6 +345,7 @@ async function loadAta() {
     compiledExtendChecks,
     compiledStandard,
     ir,
+    irDefault,
     t,
   }
 }
@@ -683,4 +702,4 @@ export function createSession(userOptions = {}) {
 }
 
 export { normalizeAlias, DEFAULT_OPTIONS }
-export const __internal = { loadAta, resolveSchemaFiles, compileOne, outputPaths, globToRegExp, isSchemaConvention, createTypeSchemas }
+export const __internal = { loadAta, atLeast, IR_DEFAULT_MIN, resolveSchemaFiles, compileOne, outputPaths, globToRegExp, isSchemaConvention, createTypeSchemas }

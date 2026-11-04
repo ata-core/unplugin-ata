@@ -93,7 +93,13 @@ describe('compile-away, ir option', { skip: !ata.ir && 'the installed ata-valida
     const code = `import { Validator } from 'ata-validator'\nconst v = new Validator(${SCHEMAS.signup})\nexport const run = (d) => v.validate(d)\n`
     const file = path.join(dir, `default-${n++}.mjs`); await fs.writeFile(file, code)
     const build = async (opts) => (await esbuild.build({ entryPoints: [file], bundle: true, format: 'esm', write: false, external: ['ata-validator', 'ata-validator/*'], plugins: [unplugin.esbuild({ schemas: 'none/*.json', types: false, ...opts })], logLevel: 'silent' })).outputFiles[0].text
-    assert.match(await build({}), /from "ata-validator\/kernels"/)
+    // The default follows the installed ata-validator (core.js IR_DEFAULT_MIN):
+    // on, the IR's helpers come from ata-validator/kernels; off, the compiled
+    // module stands alone. `ir: true` and `ir: false` decide either way.
+    const { irDefault } = await __internal.loadAta()
+    if (irDefault) assert.match(await build({}), /from "ata-validator\/kernels"/)
+    else assert.doesNotMatch(await build({}), /ata-validator\/kernels/)
+    assert.match(await build({ ir: true }), /from "ata-validator\/kernels"/)
     assert.doesNotMatch(await build({ ir: false }), /ata-validator\/kernels/)
   })
 

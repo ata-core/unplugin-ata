@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import unplugin from '../src/index.js'
+import { __internal } from '../src/core.js'
 import { compileAway } from '../src/compile-away.js'
 
 const require = createRequire(import.meta.url)
@@ -97,11 +98,13 @@ describe('compileAway in every bundler', () => {
       // And one that reads errors, only ever called, the bare wrapper with ata's errors.
       const hasBareRich = await import('ata-validator/compiled-bare-rich').then(() => true, () => false)
       const want = hasObject ? ['ata-validator/compiled', hasBareRich ? 'ata-validator/compiled-bare-rich' : 'ata-validator/compiled-object', hasBare ? 'ata-validator/compiled-bare' : 'ata-validator/compiled-verdict'] : ['ata-validator/compiled', 'ata-validator/compiled-verdict']
-      // With ata-validator/ir (the `ir` option, on by default), every validator
-      // that is only called comes from it and imports the kernels; the one that
-      // validates JSON text keeps the full wrapper.
-      const hasIr = await import('ata-validator/ir').then(() => true, () => false)
-      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), (hasIr ? ['ata-validator/compiled', 'ata-validator/kernels'] : want).sort())
+      // With ata-validator/ir on by default (the installed ata-validator from
+      // core.js IR_DEFAULT_MIN), every validator that is only called comes
+      // from it and imports the kernels; the one that validates JSON text
+      // keeps the full wrapper. On an older ata-validator the compiled
+      // wrappers stand.
+      const { irDefault } = await __internal.loadAta()
+      assert.deepEqual([...out.matchAll(/from ['"](ata-validator[^'"]*)['"]/g)].map((m) => m[1]).sort(), (irDefault ? ['ata-validator/compiled', 'ata-validator/kernels'] : want).sort())
       await check(path.join(dir, 'out.mjs'))
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
