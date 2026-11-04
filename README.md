@@ -595,8 +595,8 @@ set `table` itself. The verdicts, errors and defaults
 are the same either way, and the build log says which it chose.
 
 In a Vite + React application with ten six-field forms reading plain errors,
-the validators add 2.26 KB gzipped to the first load, against 5.35 KB as
-modules; with email and uri fields among them, 2.95 KB against 8.24. Plans
+the validators add 2.02 KB gzipped to the first load, against 5.35 KB as
+modules; with email and uri fields among them, 2.70 KB against 8.24. Plans
 check email and uri with regular expressions that give the scanners' answers
 on every string tested, in a third of the bytes. On a single form the build
 keeps the written module, which there is the smaller (1.41 KB). A plan is
