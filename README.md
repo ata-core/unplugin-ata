@@ -553,8 +553,9 @@ the plans do not cover keeps its module. The verdicts, errors and defaults
 are the same either way, and the build log says which it chose.
 
 In a Vite + React application with ten six-field forms reading plain errors,
-the validators add 2.37 KB gzipped to the first load, 1.21 times what the
-same forms cost with valibot; with email and uri fields among them, 4.51 KB,
+the validators add 2.37 KB gzipped to the first load, against 5.35 KB as
+modules and 1.21 times what the same forms cost with valibot; with email
+and uri fields among them, 4.51 KB against 8.24,
 most of it the two format checks, which implement RFC 5321 and RFC 3986 in
 full. On one or two forms the build keeps the written modules. A plan is
 slower per call than a module (445 against 22 ns on a valid order form), so
