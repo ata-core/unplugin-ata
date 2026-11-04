@@ -155,3 +155,18 @@ describe('compile-away, table plans', { skip: !(ata.ir && ata.ir.tableModule) &&
     assert.equal(rewritten.run({ tType: 'x' }).errors[0].instancePath, '/tType')
   })
 })
+
+describe('table: the application-wide choice', { skip: !(ata.ir && ata.ir.tableModule) && 'the installed ata-validator has no table backend' }, () => {
+  const form = (i) => `new Validator({ type: 'object', properties: { a${i}: { type: 'string', minLength: 2, maxLength: 80 }, b${i}: { type: 'integer', minimum: 1, maximum: 20 }, c${i}: { type: 'string', pattern: '^[A-Z0-9]{6}$' }, d${i}: { type: 'boolean' }, e${i}: { type: 'string', maxLength: 280 }, f${i}: { enum: ['x', 'y'] } }, required: ['a${i}', 'b${i}'], additionalProperties: false }, { richErrors: false })`
+  const app = (n) => [[`import { Validator } from 'ata-validator'\n${Array.from({ length: n }, (_, i) => `const v${i} = ${form(i)}\nexport const r${i} = (d) => v${i}.validate(d)\n`).join('')}`, path.join(dir || here, 'app.js')]]
+  it('keeps written modules for one form, where they make the smaller bundle', async () => {
+    const { tablePays } = await import('../src/compile-away.js')
+    assert.equal((await tablePays(app(1), ata)).pays, false)
+  })
+  it('takes plans once the forms outweigh the interpreter (four of these)', async () => {
+    const { tablePays } = await import('../src/compile-away.js')
+    const r = await tablePays(app(4), ata)
+    assert.equal(r.pays, true, `saving ${r.saving}`)
+    assert.equal(r.calls, 4)
+  })
+})

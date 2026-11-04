@@ -565,22 +565,30 @@ export async function sharedErrorsPay(sources, ata) {
   return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 
-// Whether the application's IR validators are smaller as table plans: the
-// plans and the table interpreter against the modules, from the gzipped size
-// of all of each together. TABLE_RUNTIME_COST is the interpreter's cost over
-// the modules' own helpers, set from bundles so that a choice of plans is
-// never the larger bundle: on order forms of 1 to 10, plain and rich, with and
-// without format checks, built with esbuild, every application it sent to the
-// plans got a smaller bundle (plans pay from three or four forms).
-const TABLE_RUNTIME_COST = 3000
-export async function tablePays(sources, ata) {
-  const tableCollect = []
+// Whether the application's IR validators are smaller as table plans: every
+// scanned file rewritten both ways, as the transform would rewrite it, and
+// the two outputs compared gzipped, all files together, against
+// TABLE_RUNTIME_COST, what the table interpreter costs a bundle over the
+// helpers written modules use. Set from Vite + React builds of 1 to 10 form
+// validators, plain and rich, with and without format checks, 24 in all: the
+// saving computed here was at most 1694 bytes wherever plans made the larger
+// first load (every single-form build) and at least 2182 wherever they made
+// the smaller one (two forms on), so a choice of plans is never the larger
+// bundle on those.
+export const TABLE_RUNTIME_COST = 1900
+export async function tablePays(sources, ata, cost = TABLE_RUNTIME_COST) {
+  const modules = []; const plans = []; let calls = 0
   for (const [code, id] of sources) {
-    try { compileAway(code, id, ata, { sharedErrors: false, ir: true, tableCollect }) } catch {}
+    let m = null; let t = null
+    try { m = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: false }) } catch {}
+    try { t = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: true }) } catch {}
+    if (!m || !t || m.code === t.code) continue
+    calls += (t.code.match(/__ataK_table(?:Plain|Rich)\(/g) || []).length
+    modules.push(m.code); plans.push(t.code)
   }
-  if (tableCollect.length === 0) return { pays: false, saving: 0, calls: 0 }
-  const saving = (await gzipSizeAsync(tableCollect.map(([m]) => m).join('\n'))) - (await gzipSizeAsync(tableCollect.map(([, t]) => t).join('\n')))
-  return { pays: saving > TABLE_RUNTIME_COST, saving, calls: tableCollect.length }
+  if (calls === 0) return { pays: false, saving: 0, calls: 0 }
+  const saving = (await gzipSizeAsync(modules.join('\n'))) - (await gzipSizeAsync(plans.join('\n')))
+  return { pays: saving > cost, saving, calls }
 }
 
 // The module's version stamp and, when its schema has a default, its own
@@ -730,10 +738,8 @@ export function compileAway(code, id, ata, options) {
   const collect = options && Array.isArray(options.collect) ? options.collect : null
   // `table`: write IR validators as plans for ata-validator/kernels' table
   // interpreter (lib/ir/table.mjs) where one exists; decided for the whole
-  // application by tablePays below. `tableCollect`: the scan, which records
-  // each IR validator's module and plan and chooses nothing.
+  // application by tablePays below.
   const table = options && options.table === true
-  const tableCollect = options && Array.isArray(options.tableCollect) ? options.tableCollect : null
   const typeSchema = options && typeof options.typeSchema === 'function' ? options.typeSchema : null
   // Under Bun's ahead-of-time compile a TypeScript file is type-checked with
   // the project's strictness, and a compiled module written into it as plain
@@ -922,19 +928,22 @@ export function compileAway(code, id, ata, options) {
     const names = new Set(m ? m[1].split(',').filter(Boolean) : [])
     let body = (m ? src.slice(m[0].length) : src).replace(/^export const\{isValid,validate\}=/m, 'const{isValid,validate}=')
     body = body.replace(/"(?:[^"\\]|\\.)*"|[A-Za-z_$][\w$]*/g, (t) => t[0] !== '"' && names.has(t) ? (irKernels.add(t), '__ataK_' + t) : t)
+    // A plan and nothing else: the interpreter's object is the validator
+    // (it answers isValidObject too), with no function around it.
+    const bare = /^const P=(\[[^\n]*\])\nconst\{isValid,validate\}=(__ataK_table(?:Plain|Rich))\(P((?:,[^\n]*)?)\)\n?$/.exec(body)
+    if (bare) { modules.push(`const __ataCompiled${index} = ${bare[2]}(${bare[1]}${bare[3]});\n`); return }
     modules.push(`const __ataCompiled${index} = (() => {\n${body}\nreturn ${verdictOnly ? '{ isValidObject: isValid }' : '{ validate, isValidObject: isValid }'};\n})();\n`)
   }
   // The IR's form of a validator: a table plan where the application chose
-  // them and the schema is one the table takes, the module otherwise. The scan
-  // (tableCollect) records both and keeps the module.
+  // them and the schema is one the table takes, the module otherwise.
   const irFor = (schema, opts, verdictOnly) => {
     let irSrc = null
     try { irSrc = ata.ir.specialize(schema, { ...opts, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
     if (!irSrc) return null
-    if ((table || tableCollect) && typeof ata.ir.tableModule === 'function') {
+    if (table && typeof ata.ir.tableModule === 'function') {
       let tab = null
       try { tab = ata.ir.tableModule(schema, opts) } catch { tab = null }
-      if (tab) { if (tableCollect) tableCollect.push([irSrc, tab]); else return { src: tab, place: placeTable } }
+      if (tab) return { src: tab, place: placeTable }
     }
     return { src: irSrc, place: (i, x, v) => placeIR(i, x, v) }
   }
