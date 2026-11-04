@@ -565,6 +565,24 @@ export async function sharedErrorsPay(sources, ata) {
   return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
 }
 
+// Whether the application's IR validators are smaller as table plans: the
+// plans and the table interpreter against the modules, from the gzipped size
+// of all of each together. TABLE_RUNTIME_COST is the interpreter's cost over
+// the modules' own helpers, set from bundles so that a choice of plans is
+// never the larger bundle: on order forms of 1 to 10, plain and rich, with and
+// without format checks, built with esbuild, every application it sent to the
+// plans got a smaller bundle (plans pay from three or four forms).
+const TABLE_RUNTIME_COST = 3000
+export async function tablePays(sources, ata) {
+  const tableCollect = []
+  for (const [code, id] of sources) {
+    try { compileAway(code, id, ata, { sharedErrors: false, ir: true, tableCollect }) } catch {}
+  }
+  if (tableCollect.length === 0) return { pays: false, saving: 0, calls: 0 }
+  const saving = (await gzipSizeAsync(tableCollect.map(([m]) => m).join('\n'))) - (await gzipSizeAsync(tableCollect.map(([, t]) => t).join('\n')))
+  return { pays: saving > TABLE_RUNTIME_COST, saving, calls: tableCollect.length }
+}
+
 // The module's version stamp and, when its schema has a default, its own
 // defaults pass go out with it: the wrappers fill defaults with that pass and
 // read the stamp to know they can (lib/compiled-common.js in ata-validator),
@@ -710,6 +728,12 @@ function compiledOptionsArg(node, ctx, supported, plainOk, out) {
 export function compileAway(code, id, ata, options) {
   const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
   const collect = options && Array.isArray(options.collect) ? options.collect : null
+  // `table`: write IR validators as plans for ata-validator/kernels' table
+  // interpreter (lib/ir/table.mjs) where one exists; decided for the whole
+  // application by tablePays below. `tableCollect`: the scan, which records
+  // each IR validator's module and plan and chooses nothing.
+  const table = options && options.table === true
+  const tableCollect = options && Array.isArray(options.tableCollect) ? options.tableCollect : null
   const typeSchema = options && typeof options.typeSchema === 'function' ? options.typeSchema : null
   // Under Bun's ahead-of-time compile a TypeScript file is type-checked with
   // the project's strictness, and a compiled module written into it as plain
@@ -890,6 +914,30 @@ export function compileAway(code, id, ata, options) {
     const alias = names.length ? `const ${names.map((n) => `${n} = __ataK_${n}`).join(', ')};\n` : ''
     modules.push(`const __ataCompiled${index} = (() => {\n${alias}${body}\nreturn ${verdictOnly ? '{ isValidObject: isValid }' : '{ validate, isValidObject: isValid }'};\n})();\n`)
   }
+  // A table plan: data and the kernels it names, each read as the import the
+  // file gets (__ataK_), outside string literals; no aliases to repeat per
+  // validator.
+  const placeTable = (index, src, verdictOnly) => {
+    const m = /^import \{([^}]*)\} from "ata-validator\/kernels"\n/.exec(src)
+    const names = new Set(m ? m[1].split(',').filter(Boolean) : [])
+    let body = (m ? src.slice(m[0].length) : src).replace(/^export const\{isValid,validate\}=/m, 'const{isValid,validate}=')
+    body = body.replace(/"(?:[^"\\]|\\.)*"|[A-Za-z_$][\w$]*/g, (t) => t[0] !== '"' && names.has(t) ? (irKernels.add(t), '__ataK_' + t) : t)
+    modules.push(`const __ataCompiled${index} = (() => {\n${body}\nreturn ${verdictOnly ? '{ isValidObject: isValid }' : '{ validate, isValidObject: isValid }'};\n})();\n`)
+  }
+  // The IR's form of a validator: a table plan where the application chose
+  // them and the schema is one the table takes, the module otherwise. The scan
+  // (tableCollect) records both and keeps the module.
+  const irFor = (schema, opts, verdictOnly) => {
+    let irSrc = null
+    try { irSrc = ata.ir.specialize(schema, { ...opts, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
+    if (!irSrc) return null
+    if ((table || tableCollect) && typeof ata.ir.tableModule === 'function') {
+      let tab = null
+      try { tab = ata.ir.tableModule(schema, opts) } catch { tab = null }
+      if (tab) { if (tableCollect) tableCollect.push([irSrc, tab]); else return { src: tab, place: placeTable } }
+    }
+    return { src: irSrc, place: (i, x, v) => placeIR(i, x, v) }
+  }
   const resolverCalls = new Set()
   if (resolverName) {
     for (const r of refs) {
@@ -906,11 +954,10 @@ export function compileAway(code, id, ata, options) {
       // error, in order, and those are the same in the plain shape, which
       // leaves the error enrichment out of the bundle.
       if (options && options.ir && ata.ir && !virtual) {
-        let irSrc = null
-        try { irSrc = ata.ir.specialize(schema, { richErrors: false, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
-        if (irSrc) {
+        const ir = irFor(schema, { richErrors: false }, false)
+        if (ir) {
           const index = modules.length
-          placeIR(index, irSrc, false)
+          ir.place(index, ir.src, false)
           s.overwrite(call.start, call.end, `__ataCompiledResolver(__ataCompiled${index}${extra})`)
           resolverCalls.add(call)
           done.add(call)
@@ -987,7 +1034,6 @@ export function compileAway(code, id, ata, options) {
       try { opts = optionsArg ? JSON.parse(optionsArg) : {} } catch { opts = null }
       if (opts && Object.keys(opts).every((k) => (k === 'richErrors' || k === 'useDefaults' || k === 'assertFormat') && typeof opts[k] === 'boolean')) {
         const verdictOnly = [...binding.methods].every((m) => m === 'isValidObject')
-        let irSrc = null
         // Verdict functions always: validate() answers a valid document with
         // them before it gathers any error, and without them that answer
         // runs the error-gathering functions with no list. On SchemaStore's
@@ -997,10 +1043,10 @@ export function compileAway(code, id, ata, options) {
         // fillSource: the runtime's generated defaults pass, written in where
         // the IR's own fill declines (on SchemaStore 0.56 of the time on the
         // 22 schemas it changes, slower on none).
-        try { irSrc = ata.ir.specialize(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
-        if (irSrc) {
+        const ir = irFor(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false }, verdictOnly)
+        if (ir) {
           const index = modules.length
-          placeIR(index, irSrc, verdictOnly)
+          ir.place(index, ir.src, verdictOnly)
           if (verdictOnly) kinds.verdict++; else if (opts.richErrors === false) kinds.plain++; else kinds.errors++
           s.overwrite(expr.start, expr.end, `__ataCompiled${index}`)
           done.add(expr)

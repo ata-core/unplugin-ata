@@ -122,3 +122,36 @@ describe('compile-away, ir option', { skip: !ata.ir && 'the installed ata-valida
     assert.ok(!out || !/ata-validator\/kernels/.test(out.code))
   })
 })
+
+// `table`: the IR's validators as plans for ata-validator/kernels' table
+// interpreter. Each must answer as the runtime does, as the modules do; a
+// schema the table does not take (payment, an anyOf; tree, unevaluated
+// properties) keeps its module.
+describe('compile-away, table plans', { skip: !(ata.ir && ata.ir.tableModule) && 'the installed ata-validator has no table backend' }, () => {
+  for (const [name, schema] of Object.entries(SCHEMAS)) {
+    for (const opts of ['', ', { richErrors: false }', ', { useDefaults: false }']) {
+      it(`${name}${opts}: the plan answers as the runtime`, async () => {
+        const code = `import { Validator } from 'ata-validator'\nconst v = new Validator(${schema}${opts})\nexport const run = (d) => { const r = v.validate(d); return [r, d] }\nexport const ok = (d) => v.isValidObject(d)\n`
+        const { out, rewritten, original } = await load(code, { ir: true, table: true })
+        assert.ok(out && !out.code.includes('new Validator('), 'the call is replaced')
+        const planned = /__ataK_table(Plain|Rich)\(/.test(out.code)
+        assert.equal(planned, ata.ir.tableModule(new Function(`return (${schema})`)(), {}) !== null, 'a plan exactly where the table takes the schema')
+        for (const doc of DOCS) {
+          const [ra, da] = original.run(structuredClone(doc))
+          const [rb, db] = rewritten.run(structuredClone(doc))
+          assert.equal(shape(rb), shape(ra), `validate(${JSON.stringify(doc)})`)
+          if (ra.valid) assert.equal(rb.data, db, 'data is the checked value')
+          assert.deepEqual(db, da, `the document after defaults, ${JSON.stringify(doc)}`)
+          assert.equal(rewritten.ok(structuredClone(doc)), original.ok(structuredClone(doc)), `isValidObject(${JSON.stringify(doc)})`)
+        }
+      })
+    }
+  }
+  it('a plan names its kernels through the file\'s one import, not in its strings', async () => {
+    const code = `import { Validator } from 'ata-validator'\nconst v = new Validator({ type: 'object', properties: { tType: { type: 'string', enum: ['tType', 'tLeaf'] } }, required: ['tType'] })\nexport const run = (d) => v.validate(d)\n`
+    const { out, rewritten } = await load(code, { ir: true, table: true })
+    assert.match(out.code, /"tType"/, 'a property named like a kernel stays a string')
+    assert.equal(rewritten.run({ tType: 'tLeaf' }).valid, true)
+    assert.equal(rewritten.run({ tType: 'x' }).errors[0].instancePath, '/tType')
+  })
+})

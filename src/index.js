@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { createSession, normalizeAlias, compile, __internal } from './core.js'
-import { compileAway, sharedErrorsPay, clearSizes } from './compile-away.js'
+import { compileAway, sharedErrorsPay, tablePays, clearSizes } from './compile-away.js'
 
 const SOURCE = /\.[cm]?[jt]sx?$/
 
@@ -76,11 +76,13 @@ export const unpluginFactory = (userOptions = {}) => {
       clearSizes()
       session.typeSchemas.reset()
       session.scanned = null
+      session.scannedSources = null
       if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
         const api = await session.api()
         if (api.compiledModuleFor && api.compiledSharedErrors) {
           const sources = scanSources(session.root || process.cwd())
           session.scanned = new Set(sources.map(([, id]) => path.resolve(id)))
+          session.scannedSources = sources
           const { pays, saving, calls } = await sharedErrorsPay(sources, cachedApi(session, api))
           // When the whole application does not pay for the runtime, no single
           // call does either: the transform skips the compact attempt. A file
@@ -88,6 +90,20 @@ export const unpluginFactory = (userOptions = {}) => {
           // per-module rule, which never makes a bundle bigger either.
           session.sharedDecision = pays ? 'smaller' : false
           if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) can share one error runtime, saving ${saving} bytes gzipped against its cost: ${pays ? 'shared' : 'kept self-contained'}`)
+        }
+      }
+      // `table` 'auto' decides for the whole application too: the IR's
+      // validators go out as plans for one shared interpreter when that makes
+      // the bundle smaller (src/compile-away.js tablePays), compiled code
+      // otherwise. A file the scan did not see keeps compiled code.
+      session.tableDecision = false
+      if (userOptions.compileAway !== false && userOptions.ir !== false && (userOptions.table === undefined || userOptions.table === 'auto')) {
+        const api = await session.api()
+        if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
+          if (!session.scanned) { const sources = scanSources(session.root || process.cwd()); session.scanned = new Set(sources.map(([, id]) => path.resolve(id))); session.scannedSources = sources } else if (!session.scannedSources) session.scannedSources = scanSources(session.root || process.cwd())
+          const { pays, saving, calls } = await tablePays(session.scannedSources, cachedApi(session, api))
+          session.tableDecision = pays
+          if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) as table plans would save ${saving} bytes gzipped against the interpreter's cost: ${pays ? 'plans' : 'compiled code'}`)
         }
       }
     },
@@ -129,7 +145,8 @@ export const unpluginFactory = (userOptions = {}) => {
       // Under the ahead-of-time compile the compiled modules are virtual .js
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
-      const out = compileAway(code, file, cachedApi(session, api), { sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir !== false })
+      const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableDecision === true && session.scanned && session.scanned.has(path.resolve(file)))
+      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir !== false })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },

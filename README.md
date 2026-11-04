@@ -543,6 +543,24 @@ order.
 Needs ata-validator 1.63.0 or later; with an older one the option does
 nothing.
 
+### `table`, many forms as data
+
+A written module is fast and costs about 400 bytes gzipped a form. With
+`table: 'auto'` (the default) the build also writes each validator as a plan
+for one interpreter shared across the bundle, compares the two for the whole
+application, and takes the plans when the bundle comes out smaller; a schema
+the plans do not cover keeps its module. The verdicts, errors and defaults
+are the same either way, and the build log says which it chose.
+
+In a Vite + React application with ten six-field forms reading plain errors,
+the validators add 2.37 KB gzipped to the first load, 1.21 times what the
+same forms cost with valibot; with email and uri fields among them, 4.51 KB,
+most of it the two format checks, which implement RFC 5321 and RFC 3986 in
+full. On one or two forms the build keeps the written modules. A plan is
+slower per call than a module (445 against 22 ns on a valid order form), so
+`table: false` keeps modules everywhere, and `table: true` takes plans
+wherever they cover the schema.
+
 ## How it works
 
 Output goes to disk, not to virtual modules. That is what makes the plugin

@@ -53,6 +53,15 @@ export interface Options {
    */
   ir?: boolean
   /**
+   * Validators the IR compiles go out as plans for one shared table
+   * interpreter (ata-validator/kernels) instead of code, where that makes the
+   * bundle smaller: with 'auto' (the default) the build compares the two for
+   * the whole application and takes plans only when they are smaller, which
+   * on form schemas is from three or four forms on. `true` always, `false`
+   * never. Verdicts and errors are the same either way.
+   */
+  table?: boolean | 'auto'
+  /**
    * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
    * each module compiled from the `schemas` globs: the schema as a TypeScript
    * type, the module's functions with the type on them, and a typed
