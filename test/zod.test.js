@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { compileZod, unrepresentable } from '../src/zod.js'
 import { compileAway } from '../src/compile-away.js'
 import { __internal, compile } from '../src/core.js'
+import unplugin from '../src/index.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const ata = await __internal.loadAta()
@@ -118,6 +119,31 @@ describe('zod', () => {
     await assert.rejects(() => compileZod('plain.mjs', dir, write, files, load, null), /exports no zod schema/)
     await fs.writeFile(path.join(dir, 'dated.mjs'), `import { z } from 'zod'\nexport const when = z.object({ at: z.date() })\n`)
     await assert.rejects(() => compileZod('dated.mjs', dir, write, files, load, null), /dated\.mjs export when: /)
+  })
+
+  // The setup the option is for: a fragment built by Rspack, zod source in
+  // the repository, the plugin's zod pass in the build.
+  it('an Rspack fragment built with the zod option carries neither zod nor a runtime', async () => {
+    const { rspack } = await import('@rspack/core')
+    const fragment = path.join(dir, 'fragment.mjs')
+    await fs.writeFile(fragment, `import { widgetEvent } from './widget.validators.mjs'\nexport const check = (d) => widgetEvent.isValidObject(d)\nexport const errors = (d) => widgetEvent.validate(d).errors\n`)
+    const out = path.join(dir, 'rspack-out')
+    await new Promise((resolve, reject) => {
+      rspack({
+        mode: 'production', context: dir, entry: fragment,
+        experiments: { outputModule: true },
+        output: { path: out, filename: 'fragment.out.mjs', library: { type: 'module' } },
+        plugins: [unplugin.rspack({ zod: 'widget.mjs', schemas: 'none/**/*.schema.json' })],
+      }, (err, stats) => { if (err) return reject(err); if (stats.hasErrors()) return reject(new Error(stats.toString({ errors: true, all: false }))); resolve() })
+    })
+    const built = await fs.readFile(path.join(out, 'fragment.out.mjs'), 'utf8')
+    assert.doesNotMatch(built, /from\s+['"]ata-validator|require\(['"]ata-validator/, 'the fragment imports no runtime')
+    assert.doesNotMatch(built, /zod|safeParse|new Function/, 'the fragment carries no zod')
+    const mod = await load(path.join(out, 'fragment.out.mjs'))
+    assert.equal(mod.check({ event: 'click', widgetId: 'w1', position: 3, extra: 1 }), true)
+    assert.equal(mod.check({ event: 'hover', widgetId: '', position: -1 }), false)
+    assert.deepEqual(mod.errors({ event: 'hover', widgetId: '', position: -1 }).map((e) => e.instancePath), ['/event', '/widgetId', '/position'])
+    console.log(`    rspack fragment, gzipped: ${gzipSync(built, { level: 9 }).length} B`)
   })
 
   it('the page bundle carries neither zod nor a validator runtime, and is small', async () => {
