@@ -522,6 +522,18 @@ async function loadSchema(file, fresh = false, alias) {
   return pickSchema(await jiti.import(file))
 }
 
+// A module's whole namespace, for a source whose exports are picked by
+// shape (src/zod.js): JS through native import, TS through jiti.
+async function importModule(file, fresh = false, alias) {
+  const ext = path.extname(file).toLowerCase()
+  if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
+    const url = pathToFileURL(file).href + (fresh ? `?t=${Date.now()}` : '')
+    return import(url)
+  }
+  const jiti = await getJiti(alias)
+  return jiti.import(file)
+}
+
 async function writeIfChanged(file, contents) {
   try {
     const existing = await fs.readFile(file, 'utf8')
@@ -646,6 +658,10 @@ export async function compile(options = {}) {
     const { compileOpenAPI } = await import('./openapi.js')
     for (const r of await compileOpenAPI(opts.openapi, root, writeIfChanged)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, openapi: r })
   }
+  if (opts.zod) {
+    const { compileZod } = await import('./zod.js')
+    for (const r of await compileZod(opts.zod, root, writeIfChanged, resolveSchemaFiles, importModule, null)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
+  }
   return { files, results }
 }
 
@@ -679,6 +695,11 @@ export function createSession(userOptions = {}) {
         const { compileOpenAPI } = await import('./openapi.js')
         for (const r of await compileOpenAPI(options.openapi, session.root, writeIfChanged)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, openapi: r })
       }
+      // `zod`: validators from zod schema modules (src/zod.js).
+      if (options.zod) {
+        const { compileZod } = await import('./zod.js')
+        for (const r of await compileZod(options.zod, session.root, writeIfChanged, resolveSchemaFiles, importModule, session.logger)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
+      }
       return { files, results }
     },
     // ata-validator itself, loaded once for every hook that needs it.
@@ -690,6 +711,13 @@ export function createSession(userOptions = {}) {
       if (options.openapi) {
         const docs = (Array.isArray(options.openapi) ? options.openapi : [options.openapi]).map((e) => path.resolve(session.root, typeof e === 'string' ? e : e.file))
         if (docs.includes(path.resolve(file))) { const { compileOpenAPI } = await import('./openapi.js'); return compileOpenAPI(options.openapi, session.root, writeIfChanged) }
+      }
+      if (options.zod) {
+        const { entries, compileZod } = await import('./zod.js')
+        for (const entry of entries(options.zod)) {
+          const files = await resolveSchemaFiles(entry.files, session.root)
+          if (files.some((f) => path.resolve(session.root, f) === path.resolve(file))) return compileZod(entry, session.root, writeIfChanged, resolveSchemaFiles, importModule, session.logger, true)
+        }
       }
       const api = await (apiPromise ??= loadAta())
       const files = await resolveSchemaFiles(options.schemas, session.root)

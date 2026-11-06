@@ -119,6 +119,32 @@ under webpack, against 67.5 and 58.3 KB for the runtime `Validator`. Under
 Turbopack by hand, the loader is `@ata-project/unplugin/turbopack` in
 `turbopack.rules`.
 
+## Keep zod, lose it from the page
+
+A client that writes its schemas in zod can keep them and still ship a page with neither zod nor a validator runtime. The `zod` option names modules that export zod 4 schemas; the build loads each (TypeScript through jiti), converts every exported schema with zod's own `z.toJSONSchema`, and writes `<module>.validators.mjs` and `.d.mts` beside it, one `{ validate, isValidObject }` per export, which the page's build compiles away like any other validator.
+
+```js
+ata({ zod: 'src/events/*.ts' })
+```
+
+```ts
+// src/events/widget.ts, unchanged
+export const widgetEvent = z.object({ event: z.enum(['view', 'click']), widgetId: z.string().min(1), position: z.number().int().min(0) })
+```
+
+```ts
+// the page
+import { widgetEvent, type WidgetEventInput } from './events/widget.validators.mjs'
+const r = widgetEvent.validate(event)
+if (!r.valid) log(r.errors.map((e) => ({ path: e.instancePath, message: e.message })))
+```
+
+The page answers as zod does. The schema written is the input schema (`io: 'input'`), so an unknown key passes as it passes `z.object`; the key is left in place rather than stripped, and `z.strictObject` stays closed. Where zod writes its own regex beside a format name (email, uuid, url), the regex alone is kept, since zod's verdict is its regex. Errors come in the plain shape by default, keyword, `instancePath`, `schemaPath`, `params` and `message`; `validatorOptions: { richErrors: true }` asks for ata's rich shape.
+
+A refinement, transform, pipe or preprocess has no JSON Schema form, and `z.toJSONSchema` drops it without a word, so a page built from such a schema would accept what the zod schema rejects. The build refuses it by export and path instead: `widget.ts export signup: $.email: refine, $.name: transform`. Write the rule as a constraint (`pattern`, `minimum`, `enum`), move the transform after validation, or set `dropRefinements: true` to take them out knowingly, which the build reports; a server that keeps zod still runs them. A zod type JSON Schema cannot carry (`z.date()`, `z.map()`, a function) is refused the same way.
+
+Measured on three event schemas, one of them a union of objects, esbuild minified, gzip level 9, ata-validator 1.63.1, zod 4.6.7: the page carries 3.9 KB with the compiled validators and 93.0 KB with zod; one schema alone is 1.1 KB. The module beside the zod file is plain source, so a server can import it too and run the same schema on the runtime.
+
 ## One OpenAPI document for the server and the page
 
 Point the plugin at the API's OpenAPI document (3.0 or 3.1; YAML needs the
@@ -192,6 +218,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | Option | Default | Description |
 |---|---|---|
 | `schemas` | `**/*.schema.json` | Glob or globs, relative to the root. `node_modules` is skipped. |
+| `zod` | none | Modules exporting zod 4 schemas, by glob; validators written beside each. See [Keep zod](#keep-zod-lose-it-from-the-page). |
 | `outDir` | next to each schema | Directory for generated files, mirroring the source layout. |
 | `format` | `'esm'` | `'esm'` or `'cjs'`. |
 | `abortEarly` | `false` | Emit the smaller validator that stops at the first failure. |

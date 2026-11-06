@@ -70,6 +70,16 @@ export interface Options {
    */
   openapi?: string | { file: string; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean; assertFormat?: boolean } } | Array<string | { file: string; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean; assertFormat?: boolean } }>
   /**
+   * Modules exporting zod 4 schemas, by glob: `'src/events/*.ts'` writes
+   * `src/events/widget.validators.mjs` and `.d.mts` beside each, one
+   * `{ validate, isValidObject }` per exported schema, converted with
+   * `z.toJSONSchema(schema, { io: 'input' })` so an unknown key passes as it
+   * passes `z.object`. A schema with a refine, transform, pipe or preprocess
+   * fails the build by export and path, since the conversion would drop it
+   * silently; `dropRefinements: true` takes them out knowingly.
+   */
+  zod?: string | string[] | { files: string | string[]; dropRefinements?: boolean; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean } } | Array<string | { files: string | string[]; dropRefinements?: boolean; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean } }>
+  /**
    * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
    * each module compiled from the `schemas` globs: the schema as a TypeScript
    * type, the module's functions with the type on them, and a typed
