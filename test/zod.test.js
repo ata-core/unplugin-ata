@@ -248,13 +248,97 @@ export const signup = z.object({
 
   it('a module with no zod export, or a zod type JSON Schema cannot carry, is refused', async () => {
     await fs.writeFile(path.join(dir, 'plain.mjs'), 'export const a = { type: "object" }\n')
-    await assert.rejects(() => compileZod('plain.mjs', dir, write, files, load, null), /exports no zod schema/)
+    await assert.rejects(() => compileZod('plain.mjs', dir, write, files, load, null), /exports no zod, valibot or TypeBox schema/)
     await fs.writeFile(path.join(dir, 'dated.mjs'), `import { z } from 'zod'\nexport const when = z.object({ at: z.date() })\n`)
     await assert.rejects(() => compileZod('dated.mjs', dir, write, files, load, null), /dated\.mjs export when: /)
   })
 
   // The setup the option is for: a fragment built by Rspack, zod source in
   // the repository, the plugin's zod pass in the build.
+  it('from: a valibot module compiles the same way, with its checks and transforms carried, and the page gives valibot verdicts', async () => {
+    const file = path.join(dir, 'vb.mjs')
+    await fs.writeFile(file, `import * as v from 'valibot'
+export const signup = v.object({
+  email: v.pipe(v.string(), v.email(), v.check((x) => !x.endsWith('@example.com'), 'no example')),
+  name: v.pipe(v.string(), v.minLength(2), v.transform((x) => x.trim())),
+  age: v.optional(v.pipe(v.number(), v.integer(), v.minValue(13))),
+  kind: v.picklist(['a', 'b']),
+})
+export const strict = v.strictObject({ id: v.string() })
+`)
+    const r = await compileZod({ files: 'vb.mjs' }, dir, write, files, load, null)
+    assert.deepEqual(r[0].exports, ['signup', 'strict'])
+    const src = await fs.readFile(path.join(dir, 'vb.validators.mjs'), 'utf8')
+    assert.ok(src.includes("(x) => !x.endsWith('@example.com')") && src.includes('(x) => x.trim()'), 'the check and the transform are carried')
+    const lib = await load(file)
+    const { safeParse } = await import('valibot')
+    const out = compileAway(src, path.join(dir, 'vb.validators.mjs'), ata, { ir: true })
+    assert.ok(out && !out.code.includes('new Validator('))
+    const pageFile = path.join(dir, 'vb-page.mjs'); await fs.writeFile(pageFile, out.code)
+    const page = await load(pageFile)
+    const docs = [{ email: 'a@b.co', name: ' Ada ', kind: 'a' }, { email: 'a@b.co', name: 'Ada', kind: 'a', extra: 1 }, { email: 'x@example.com', name: 'Ada', kind: 'a' }, { email: 'nope', name: 'A', kind: 'c', age: 7 }, { email: 'a@b.co', name: 'Ada', kind: 'b', age: 13.5 }, {}, 'x']
+    for (const d of docs) {
+      const want = safeParse(lib.signup, structuredClone(d))
+      const got = page.signup.validate(structuredClone(d))
+      assert.equal(got.valid, want.success, `signup verdict on ${JSON.stringify(d)}`)
+      // v.object strips an unknown key from its output; the page leaves it in
+      // place, as with zod, so the data is compared on documents without one.
+      if (want.success && !('extra' in d)) assert.deepEqual(got.data, want.output, `signup data on ${JSON.stringify(d)}`)
+      assert.equal(page.signup.isValidObject(structuredClone(d)), want.success)
+    }
+    assert.equal(page.strict.isValidObject({ id: 'x', extra: 1 }), false, 'strictObject stays closed')
+    assert.equal(safeParse(lib.strict, { id: 'x', extra: 1 }).success, false)
+    // What a page cannot carry: a check after a transform, a rawCheck.
+    await fs.writeFile(path.join(dir, 'vb-bad.mjs'), `import * as v from 'valibot'\nexport const a = v.pipe(v.string(), v.transform((x) => x.trim()), v.minLength(2))\nexport const b = v.pipe(v.string(), v.rawCheck(({ dataset, addIssue }) => { if (dataset.value === 'x') addIssue({ message: 'no x' }) }))\n`)
+    await assert.rejects(() => compileZod({ files: 'vb-bad.mjs' }, dir, write, files, load, null), /valibot: vb-bad\.mjs export a: \$: min_length after a transform/)
+  })
+
+  it('from: a TypeBox module is JSON Schema as written; what its runtime adds beyond that is refused by path', async () => {
+    const file = path.join(dir, 'tb.mjs')
+    await fs.writeFile(file, `import { Type, FormatRegistry } from '@sinclair/typebox'
+FormatRegistry.Set('slug', (v) => /^[a-z-]+$/.test(v))
+export const item = Type.Object({ id: Type.Integer({ minimum: 1 }), name: Type.String({ minLength: 2 }), kind: Type.Union([Type.Literal('a'), Type.Literal('b')]), note: Type.Optional(Type.String()) }, { additionalProperties: false })
+export const raw = Type.Object({ r: Type.Unsafe({ type: 'string', maxLength: 3 }) })
+export const slug = Type.Object({ s: Type.String({ format: 'slug' }) })
+`)
+    await assert.rejects(() => compileZod({ files: 'tb.mjs' }, dir, write, files, load, null), /typebox: tb\.mjs export slug: \$\.s: format slug, which a page would not check/)
+    await fs.writeFile(path.join(dir, 'tb-ok.mjs'), (await fs.readFile(file, 'utf8')).split('export const slug')[0])
+    const r = await compileZod({ files: 'tb-ok.mjs' }, dir, write, files, load, null)
+    assert.deepEqual(r[0].exports, ['item', 'raw'])
+    const src = await fs.readFile(path.join(dir, 'tb-ok.validators.mjs'), 'utf8')
+    const { Value } = await import('@sinclair/typebox/value')
+    const lib = await load(path.join(dir, 'tb-ok.mjs'))
+    const out = compileAway(src, path.join(dir, 'tb-ok.validators.mjs'), ata, { ir: true })
+    assert.ok(out && !out.code.includes('new Validator('))
+    const pageFile = path.join(dir, 'tb-page.mjs'); await fs.writeFile(pageFile, out.code)
+    const page = await load(pageFile)
+    for (const d of [{ id: 1, name: 'ab', kind: 'a' }, { id: 0, name: 'ab', kind: 'a' }, { id: 1, name: 'ab', kind: 'c' }, { id: 1, name: 'a', kind: 'a' }, { id: 1, name: 'ab', kind: 'a', note: 'n' }, { id: 1, name: 'ab', kind: 'a', extra: 1 }, {}, 5]) {
+      assert.equal(page.item.isValidObject(structuredClone(d)), Value.Check(lib.item, d), `item verdict on ${JSON.stringify(d)}`)
+    }
+    // Type.Unsafe is JSON Schema TypeBox's own checker does not read; the page checks it as written.
+    assert.equal(page.raw.isValidObject({ r: 'abc' }), true)
+    assert.equal(page.raw.isValidObject({ r: 'toolong' }), false)
+    const dts = await fs.readFile(path.join(dir, 'tb-ok.validators.d.mts'), 'utf8')
+    assert.ok(!dts.includes('typebox'), 'a JavaScript source gets a type written from the schema')
+  })
+
+  it('from: a TypeScript module of valibot or TypeBox schemas gets the library\'s own type', async () => {
+    await fs.writeFile(path.join(dir, 'lib.ts'), `import * as v from 'valibot'\nimport { Type } from '@sinclair/typebox'\nexport const click = v.object({ x: v.number(), y: v.number() })\nexport const point = Type.Object({ px: Type.Number(), py: Type.Number() })\n`)
+    const r = await compile({ from: 'lib.ts', schemas: 'none/**/*.schema.json', root: dir })
+    assert.deepEqual(r.results.find((x) => x.zod).zod.exports, ['click', 'point'])
+    const dts = await fs.readFile(path.join(dir, 'lib.validators.d.mts'), 'utf8')
+    assert.match(dts, /import type \{ InferInput \} from 'valibot'/)
+    assert.match(dts, /import type \{ Static \} from '@sinclair\/typebox'/)
+    assert.match(dts, /export type ClickInput = InferInput<typeof import\("\.\/lib\.js"\)\.click>/)
+    assert.match(dts, /export type PointInput = Static<typeof import\("\.\/lib\.js"\)\.point>/)
+    await fs.writeFile(path.join(dir, 'consumer2.ts'), `import { click, point } from './lib.validators.mjs'\ntype Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false\nconst a = click.validate({}); if (a.valid) { const ok: Equal<typeof a.data, { x: number; y: number }> = true; void ok }\nconst b = point.validate({}); if (b.valid) { const ok: Equal<typeof b.data, { px: number; py: number }> = true; void ok }\n`)
+    await fs.writeFile(path.join(dir, 'tsconfig2.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: 'nodenext', moduleResolution: 'nodenext', target: 'es2022', skipLibCheck: true, types: [] }, files: ['consumer2.ts'] }))
+    const { execFileSync } = await import('node:child_process')
+    let out = ''
+    try { out = execFileSync(path.join(here, '..', 'node_modules', '.bin', 'tsc'), ['-p', path.join(dir, 'tsconfig2.json')], { encoding: 'utf8', stdio: 'pipe' }) } catch (e) { out = String(e.stdout || '') + String(e.stderr || '') }
+    assert.equal(out.trim(), '', `the consumer type-checks against the libraries' own types:\n${out}`)
+  })
+
   it('an Rspack fragment built with the zod option carries neither zod nor a runtime', async () => {
     const { rspack } = await import('@rspack/core')
     const fragment = path.join(dir, 'fragment.mjs')

@@ -1,8 +1,11 @@
-// The `zod` option: validators compiled from zod schemas, so a page keeps its
-// zod source and carries neither zod nor a validator runtime. Each module the
-// option names is loaded at build time (TypeScript through jiti), every export
-// that is a zod 4 schema is turned into JSON Schema with zod's own
-// `z.toJSONSchema`, and the result is written beside the module as
+// The `zod` and `from` options: validators compiled from the schemas a
+// module exports in zod, valibot or TypeBox, so a page keeps the library it
+// writes schemas in and carries neither it nor a validator runtime. Each
+// module the option names is loaded at build time (TypeScript through jiti),
+// every export that is a schema of one of those libraries is turned into
+// JSON Schema (zod's own `z.toJSONSchema`, valibot's `@valibot/to-json-schema`,
+// TypeBox's schemas are JSON Schema as written), and the result is written
+// beside the module as
 // `<name>.validators.mjs` and `.d.mts`: plain source, one `new Validator(schema)`
 // per export, which a page's build compiles away like any other
 // (src/compile-away.js). A server can import the same file and run it on the
@@ -58,7 +61,31 @@ export function entries(option) {
   return list.filter(Boolean).map((e) => (typeof e === 'string' ? { files: e } : e))
 }
 
+// The `zod` option takes zod exports only; `from` takes every library's.
+export function sourceEntries(options) {
+  return [...entries(options.zod).map((e) => ({ ...e, vendor: 'zod' })), ...entries(options.from)]
+}
+
 const isZodSchema = (v) => v !== null && typeof v === 'object' && v._zod !== undefined && v._zod.def !== null && typeof v._zod.def === 'object'
+const vendorOf = (v) => v !== null && typeof v === 'object' && v['~standard'] && typeof v['~standard'] === 'object' ? v['~standard'].vendor : undefined
+const isValibotSchema = (v) => vendorOf(v) === 'valibot' && v.kind === 'schema'
+const KIND = Symbol.for('TypeBox.Kind')
+const TRANSFORM = Symbol.for('TypeBox.Transform')
+const isTypeBoxSchema = (v) => v !== null && typeof v === 'object' && typeof v[KIND] === 'string'
+
+// The formats the specification names; a page checks these as ata does, and
+// a library's own registered format (TypeBox's FormatRegistry) would pass
+// unchecked, so it is refused by name.
+const SPEC_FORMATS = new Set(['date-time', 'date', 'time', 'duration', 'email', 'idn-email', 'hostname', 'idn-hostname', 'ipv4', 'ipv6', 'uri', 'uri-reference', 'iri', 'iri-reference', 'uuid', 'uri-template', 'json-pointer', 'relative-json-pointer', 'regex'])
+
+// A library's package as the schema module resolves it, so the conversion is
+// the project's own copy.
+async function loadFrom(fromFile, pkg, need) {
+  const req = createRequire(fromFile)
+  let resolved
+  try { resolved = req.resolve(pkg) } catch { throw new Error(`unplugin-ata: ${fromFile} needs "${pkg}" installed beside it (${need})`) }
+  return import(pathToFileURL(resolved).href)
+}
 
 // Globals a refine may read; everything else it names is a closure.
 const GLOBALS = new Set(['Number', 'Date', 'Math', 'RegExp', 'JSON', 'Object', 'Array', 'String', 'Boolean', 'isNaN', 'isFinite', 'parseInt', 'parseFloat', 'Intl', 'Set', 'Map', 'URL', 'encodeURIComponent', 'decodeURIComponent', 'undefined', 'NaN', 'Infinity', 'Symbol', 'Error', 'BigInt', 'structuredClone', 'atob', 'btoa', 'Reflect'])
@@ -170,14 +197,109 @@ export function unrepresentable(schema, at = '$', out = [], seen = new Set(), re
 
 // zod as the module resolves it, so the conversion is the project's own zod.
 async function loadZod(fromFile) {
-  const req = createRequire(fromFile)
-  let resolved
-  try { resolved = req.resolve('zod') } catch { throw new Error(`unplugin-ata: zod: ${fromFile} needs "zod" installed beside it (zod 4, for z.toJSONSchema)`) }
-  const m = await import(pathToFileURL(resolved).href)
+  const m = await loadFrom(fromFile, 'zod', 'zod 4, for z.toJSONSchema')
   const z = m.z ?? m.default ?? m
   if (typeof z.toJSONSchema !== 'function') throw new Error(`unplugin-ata: zod: ${fromFile} resolves a zod without toJSONSchema; zod 4 is needed`)
   return z
 }
+
+// valibot: a schema's pipe lists its actions in order. A `check` and a
+// `transform` whose function reads only its parameter are carried as ops;
+// a validation written after a transform is refused, since the converter
+// writes every validation into the input schema; `rawCheck`, `rawTransform`
+// and `checkItems` take a context or an index and are refused.
+const VALIBOT_GUARD = { string: 's', number: 'n', object: 'o', strict_object: 'o', loose_object: 'o', object_with_rest: 'o', array: 'a', boolean: 'b' }
+function walkValibot(schema, at, out, seen, refines, tokens, placed) {
+  if (schema === null || typeof schema !== 'object' || seen.has(schema)) return out
+  seen.add(schema)
+  const go = (sub, label, tok, ok) => walkValibot(sub, label, out, seen, refines, tok === undefined ? tokens : [...tokens, tok], placed && ok)
+  if (Array.isArray(schema.pipe)) {
+    let transformed = false
+    for (const item of schema.pipe) {
+      if (item.kind === 'schema') { go(item, at, undefined, true); continue }
+      if (item.kind === 'validation' && item.type === 'check') {
+        if (transformed) { out.push(`${at}: check after a transform, which the input schema cannot order`); continue }
+        if (!placed) { out.push(`${at}: check inside a union or record, which a page cannot place`); continue }
+        if (typeof item.message === 'function') { out.push(`${at}: check with a message that is a function`); continue }
+        const text = typeof item.requirement === 'function' ? item.requirement.toString() : ''
+        const outside = text ? closesOver(text) : ['(no function)']
+        if (outside.length) { out.push(`${at}: check closes over ${outside.join(', ')}`); continue }
+        if (refines !== null) refines.push({ at, tokens: tokens.slice(), kind: 'r', text, message: typeof item.message === 'string' ? item.message : undefined, extra: [], guard: VALIBOT_GUARD[schema.type] || '' })
+        continue
+      }
+      if (item.kind === 'transformation' && item.type === 'transform') {
+        if (!placed) { out.push(`${at}: transform inside a union or record, which a page cannot place`); continue }
+        const text = typeof item.operation === 'function' ? item.operation.toString() : ''
+        const outside = text ? closesOver(text) : ['(no function)']
+        if (outside.length) { out.push(`${at}: transform closes over ${outside.join(', ')}`); continue }
+        if (refines !== null) refines.push({ at, tokens: tokens.slice(), kind: 't', text, guard: VALIBOT_GUARD[schema.type] || '' })
+        transformed = true
+        continue
+      }
+      if (item.kind === 'validation') { if (transformed) out.push(`${at}: ${item.type} after a transform, which the input schema cannot order`); continue }
+      out.push(`${at}: ${item.type}`)
+    }
+    return out
+  }
+  if (schema.type === 'custom') out.push(`${at}: custom`)
+  if (schema.entries) for (const k of Object.keys(schema.entries)) go(schema.entries[k], `${at}.${k}`, k, true)
+  if (schema.rest) go(schema.rest, `${at}{}`, undefined, false)
+  if (schema.item) go(schema.item, `${at}[]`, null, true)
+  if (schema.wrapped) go(schema.wrapped, at, undefined, true)
+  if (schema.options) schema.options.forEach((o, i) => go(o, `${at}|${i}`, undefined, false))
+  if (schema.items) schema.items.forEach((o, i) => go(o, `${at}[${i}]`, undefined, false))
+  if (schema.key) go(schema.key, `${at}{key}`, undefined, false)
+  if (schema.value) go(schema.value, `${at}{}`, undefined, false)
+  if (schema.type === 'lazy' && typeof schema.getter === 'function') { try { go(schema.getter(undefined), at, undefined, false) } catch {} }
+  return out
+}
+
+// TypeBox: the schema is JSON Schema as written; what its runtime would do
+// beyond that (a kind outside the standard set, a Transform, a registered
+// format, a reference out of the document) has no form a page can carry.
+const TYPEBOX_KINDS = new Set(['Object', 'String', 'Number', 'Integer', 'Boolean', 'Array', 'Tuple', 'Union', 'Intersect', 'Literal', 'Null', 'Record', 'Any', 'Unknown', 'Not', 'Ref', 'Recursive', 'This', 'Unsafe', 'TemplateLiteral', 'Never'])
+function walkTypeBox(schema, at, out, seen, rootId) {
+  if (schema === null || typeof schema !== 'object' || seen.has(schema)) return out
+  seen.add(schema)
+  if (Array.isArray(schema)) { schema.forEach((x, i) => walkTypeBox(x, `${at}[${i}]`, out, seen, rootId)); return out }
+  const kind = schema[KIND]
+  if (typeof kind === 'string' && !TYPEBOX_KINDS.has(kind)) out.push(`${at}: kind ${kind}`)
+  if (schema[TRANSFORM] !== undefined) out.push(`${at}: Transform`)
+  if (typeof schema.format === 'string' && !SPEC_FORMATS.has(schema.format)) out.push(`${at}: format ${schema.format}, which a page would not check`)
+  if (typeof schema.$ref === 'string' && !schema.$ref.startsWith('#') && schema.$ref !== rootId) out.push(`${at}: $ref ${schema.$ref}`)
+  for (const k of Object.keys(schema)) { const v = schema[k]; if (v !== null && typeof v === 'object') walkTypeBox(v, k === 'properties' || k === 'patternProperties' ? at : `${at}.${k}`, out, seen, rootId) }
+  return out
+}
+
+const ADAPTERS = [
+  {
+    vendor: 'zod', detect: isZodSchema, types: "import type { z } from 'zod'",
+    typeExpr: (name, spec) => `z.input<typeof import(${JSON.stringify(spec)}).${name}>`,
+    load: loadZod,
+    walk: (schema, out, refines) => unrepresentable(schema, '$', out, new Set(), refines),
+    convert: (z, schema) => patternOnly(dropSchema(z.toJSONSchema(schema, { target: 'draft-2020-12', io: 'input', unrepresentable: 'throw' }))),
+  },
+  {
+    vendor: 'valibot', detect: isValibotSchema, types: "import type { InferInput } from 'valibot'",
+    typeExpr: (name, spec) => `InferInput<typeof import(${JSON.stringify(spec)}).${name}>`,
+    load: (file) => loadFrom(file, '@valibot/to-json-schema', 'the official converter, for toJsonSchema'),
+    walk: (schema, out, refines) => walkValibot(schema, '$', out, new Set(), refines, [], true),
+    convert: (m, schema) => {
+      const toJsonSchema = m.toJsonSchema ?? (m.default && m.default.toJsonSchema)
+      // A carried check or transform converts to nothing; anything else the
+      // converter cannot carry throws, as the walk has already said.
+      return patternOnly(dropSchema(toJsonSchema(schema, { typeMode: 'input', errorMode: 'throw', overrideAction: ({ valibotAction }) => (valibotAction.type === 'check' || valibotAction.type === 'transform') ? {} : undefined })))
+    },
+  },
+  {
+    vendor: 'typebox', detect: isTypeBoxSchema, types: "import type { Static } from '@sinclair/typebox'",
+    typeExpr: (name, spec) => `Static<typeof import(${JSON.stringify(spec)}).${name}>`,
+    load: async () => null,
+    walk: (schema, out) => walkTypeBox(schema, '$', out, new Set(), typeof schema.$id === 'string' ? schema.$id : null),
+    convert: (_, schema) => dropSchema(JSON.parse(JSON.stringify(schema))),
+  },
+]
+function dropSchema(json) { if (json && typeof json === 'object') delete json.$schema; return json }
 
 // The module and its types for one zod module's exports. `typeImport` is
 // the specifier the declarations import the zod module by, for a
@@ -228,11 +350,12 @@ function refinesOk(data, places) {
 }
 `
 
-export function render(schemas, validatorOptions, toTypeScript, source, typeImport = null, refines = {}) {
+export function render(schemas, validatorOptions, toTypeScript, source, typeImport = null, refines = {}, vendors = {}) {
   const opts = validatorOptions && Object.keys(validatorOptions).length ? ', ' + JSON.stringify(validatorOptions) : ''
   const anyRefine = Object.values(refines).some((l) => l && l.length)
   let js = `// Generated by @ata-project/unplugin from ${source}. Do not edit.\n// One validator per exported zod schema (the input schema); a page's build compiles each.${anyRefine ? '\n// Refinements are written in and run after the compiled check, on the value at their place.' : ''}\nimport { Validator } from 'ata-validator'\n\n${anyRefine ? REFINE_RUNTIME + '\n' : ''}`
-  let dts = `// Generated by @ata-project/unplugin from ${source}. Do not edit.\n${typeImport ? "import type { z } from 'zod'\n" : ''}export interface ValidationError { keyword: string; instancePath: string; schemaPath: string; params: Record<string, unknown>; message: string; [field: string]: unknown }\nexport type Result<T> = { valid: true; data: T; errors: readonly never[] } | { valid: false; errors: ValidationError[] }\n\n`
+  const used = typeImport ? [...new Set(Object.keys(schemas).map((n) => (vendors[n] || ADAPTERS[0]).types))] : []
+  let dts = `// Generated by @ata-project/unplugin from ${source}. Do not edit.\n${used.map((l) => l + '\n').join('')}export interface ValidationError { keyword: string; instancePath: string; schemaPath: string; params: Record<string, unknown>; message: string; [field: string]: unknown }\nexport type Result<T> = { valid: true; data: T; errors: readonly never[] } | { valid: false; errors: ValidationError[] }\n\n`
   const taken = new Set()
   Object.keys(schemas).forEach((name, i) => {
     const ns = pascal(name)
@@ -262,7 +385,7 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
       js += `const v${i} = new Validator(${lit}${opts})\nexport const ${name} = { validate: (data) => v${i}.validate(data), isValidObject: (data) => v${i}.isValidObject(data) }\n`
     }
     if (typeImport) {
-      dts += `export type ${ns}Input = z.input<typeof import(${JSON.stringify(typeImport)}).${name}>\nexport declare const ${name}: { validate(data: unknown): Result<${ns}Input>; isValidObject(data: unknown): data is ${ns}Input }\n\n`
+      dts += `export type ${ns}Input = ${(vendors[name] || ADAPTERS[0]).typeExpr(name, typeImport)}\nexport declare const ${name}: { validate(data: unknown): Result<${ns}Input>; isValidObject(data: unknown): data is ${ns}Input }\n\n`
       return
     }
     let types = 'export type Body = unknown'
@@ -278,31 +401,30 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
 
 // The JSON Schemas of one module's zod exports, or a thrown error naming
 // what cannot be carried.
-export async function schemasOf(file, mod, entry, log, refinesOut = null) {
-  const names = Object.keys(mod).filter((k) => isZodSchema(mod[k]))
-  if (!names.length) throw new Error(`unplugin-ata: zod: ${file} exports no zod schema (a zod 4 schema is an object with _zod)`)
-  const z = await loadZod(file)
+export async function schemasOf(file, mod, entry, log, refinesOut = null, vendorsOut = null) {
+  const picked = Object.keys(mod).map((k) => [k, ADAPTERS.find((a) => a.detect(mod[k]))]).filter(([, a]) => a)
+  const only = entry.vendor ? picked.filter(([, a]) => a.vendor === entry.vendor) : picked
+  if (!only.length) throw new Error(`unplugin-ata: zod: ${file} exports no ${entry.vendor || 'zod, valibot or TypeBox'} schema`)
+  const libs = new Map()
   const out = {}
-  for (const name of names) {
+  for (const [name, adapter] of only) {
     const schema = mod[name]
+    if (!libs.has(adapter.vendor)) libs.set(adapter.vendor, await adapter.load(file))
+    const z = libs.get(adapter.vendor)
     const carried = []
-    const dropped = unrepresentable(schema, '$', [], new Set(), carried)
+    const dropped = adapter.walk(schema, [], carried)
     if (refinesOut !== null) refinesOut[name] = carried
+    if (vendorsOut !== null) vendorsOut[name] = adapter
     if (dropped.length) {
       if (!entry.dropRefinements) {
-        throw new Error(`unplugin-ata: zod: ${path.basename(file)} export ${name}: ${dropped.join(', ')}. z.toJSONSchema drops these without a word, and a page would then accept what the zod schema rejects. Write the rule as a JSON Schema constraint (pattern, minimum, enum), move a transform after validation, or set dropRefinements: true to take them out knowingly.`)
+        throw new Error(`unplugin-ata: ${adapter.vendor}: ${path.basename(file)} export ${name}: ${dropped.join(', ')}. The conversion drops these without a word, and a page would then accept what the ${adapter.vendor} schema rejects. Write the rule as a JSON Schema constraint (pattern, minimum, enum), move a transform after validation, or set dropRefinements: true to take them out knowingly.`)
       }
-      if (log) log.warn(`unplugin-ata: zod: ${path.basename(file)} export ${name}: dropped ${dropped.join(', ')} (dropRefinements)`)
+      if (log) log.warn(`unplugin-ata: ${adapter.vendor}: ${path.basename(file)} export ${name}: dropped ${dropped.join(', ')} (dropRefinements)`)
     }
     const convert = (s) => {
-      let json
-      try {
-        json = z.toJSONSchema(s, { target: 'draft-2020-12', io: 'input', unrepresentable: 'throw' })
-      } catch (e) {
-        throw new Error(`unplugin-ata: zod: ${path.basename(file)} export ${name}: ${e && e.message ? e.message : e}`)
+      try { return adapter.convert(z, s) } catch (e) {
+        throw new Error(`unplugin-ata: ${adapter.vendor}: ${path.basename(file)} export ${name}: ${e && e.message ? e.message : e}`)
       }
-      delete json.$schema
-      return patternOnly(json)
     }
     out[name] = convert(schema)
     // The second schema of each pipe, as JSON for a check of its own.
@@ -334,8 +456,8 @@ export async function compileZod(option, root, write, resolveFiles, importModule
       if (/\.validators\.(mjs|d\.mts)$/.test(file)) continue
       const abs = path.resolve(root, file)
       const mod = await importModule(abs, fresh)
-      const refines = {}
-      const schemas = await schemasOf(abs, mod, entry, log, refines)
+      const refines = {}; const vendors = {}
+      const schemas = await schemasOf(abs, mod, entry, log, refines, vendors)
       const vo = entry.validatorOptions || {}
       const opts = {}
       if (vo.richErrors !== true) opts.richErrors = false
@@ -345,7 +467,7 @@ export async function compileZod(option, root, write, resolveFiles, importModule
       // TypeScript resolves './widget.js' to widget.ts under both the bundler
       // and the nodenext resolution; a .mts source is imported as .mjs.
       const typeImport = ext === '.ts' || ext === '.tsx' ? './' + path.basename(base) + '.js' : ext === '.mts' ? './' + path.basename(base) + '.mjs' : null
-      const { js, dts } = render(schemas, opts, toTypeScript, path.basename(abs), typeImport, refines)
+      const { js, dts } = render(schemas, opts, toTypeScript, path.basename(abs), typeImport, refines, vendors)
       const changed = (await write(base + '.validators.mjs', js)) | (await write(base + '.validators.d.mts', dts))
       out.push({ file: abs, module: base + '.validators.mjs', exports: Object.keys(schemas), changed: !!changed })
     }

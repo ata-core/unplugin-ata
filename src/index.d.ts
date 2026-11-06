@@ -80,6 +80,15 @@ export interface Options {
    */
   zod?: string | string[] | { files: string | string[]; dropRefinements?: boolean; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean } } | Array<string | { files: string | string[]; dropRefinements?: boolean; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean } }>
   /**
+   * Like `zod`, for modules exporting zod, valibot or TypeBox schemas, each
+   * export by its own library: `'src/schemas/*.ts'`. valibot converts with
+   * `@valibot/to-json-schema` (input mode), a TypeBox schema is JSON Schema as
+   * written; a check, transform, registered format, custom kind or a
+   * reference out of the document that a page cannot carry fails the build
+   * by export and path.
+   */
+  from?: string | string[] | { files: string | string[]; dropRefinements?: boolean; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean } } | Array<string | { files: string | string[]; dropRefinements?: boolean; validatorOptions?: { richErrors?: boolean; useDefaults?: boolean } }>
+  /**
    * Under `Bun.build({ compile: { aot: true } })`, write a `.bun.ts` beside
    * each module compiled from the `schemas` globs: the schema as a TypeScript
    * type, the module's functions with the type on them, and a typed
