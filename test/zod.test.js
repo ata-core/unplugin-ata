@@ -113,17 +113,62 @@ describe('zod', () => {
 
   it('a refine or transform stops the build by export and path; dropRefinements takes them out knowingly', async () => {
     const file = path.join(dir, 'refined.mjs')
-    await fs.writeFile(file, `import { z } from 'zod'\nexport const signup = z.object({ email: z.string().email().refine((v) => !v.endsWith('@example.com'), 'no example'), name: z.string().transform((v) => v.trim()), tags: z.array(z.string().refine((t) => t.length < 10)) })\n`)
+    await fs.writeFile(file, `import { z } from 'zod'\nexport const signup = z.object({ email: z.string().email().refine((v) => !v.endsWith('@example.com'), 'no example'), name: z.string().transform((v, ctx) => { if (!v) ctx.addIssue({ code: 'custom', message: 'empty' }); return v.trim() }), tags: z.array(z.string().refine((t) => t.length < 10)) }).superRefine((o, ctx) => { if (o.tags.length > 3) ctx.addIssue({ code: 'custom', message: 'too many' }) })\n`)
     // The two refines read only their parameter and are carried; the
-    // transform is what refuses the export.
+    // superRefine and the transform that takes ctx are what refuse the export.
     const found = unrepresentable((await load(file)).signup)
-    assert.deepEqual(found, ['$.name: transform'])
-    await assert.rejects(() => compileZod('refined.mjs', dir, write, files, load, null), /refined\.mjs export signup: \$\.name: transform\./)
+    assert.deepEqual(found, ['$: superRefine', '$.name: transform takes ctx, which a page cannot answer'])
+    await assert.rejects(() => compileZod('refined.mjs', dir, write, files, load, null), /refined\.mjs export signup: \$: superRefine, \$\.name: transform takes ctx/)
     const warnings = []
     const r = await compileZod({ files: 'refined.mjs', dropRefinements: true }, dir, write, files, load, { warn: (m) => warnings.push(m) })
     assert.deepEqual(r[0].exports, ['signup'])
     assert.equal(warnings.length, 1)
-    assert.match(warnings[0], /dropped \$\.name: transform/)
+    assert.match(warnings[0], /dropped \$: superRefine, \$\.name: transform takes ctx/)
+  })
+
+  it('a transform that reads only its parameter is carried: validate() hands back what zod parses, in order with the refines after it', async () => {
+    const file = path.join(dir, 'transformed.mjs')
+    await fs.writeFile(file, `import { z } from 'zod'
+export const order = z.object({
+  email: z.string().email().transform((v) => v.trim().toLowerCase()).refine((v) => !v.endsWith('@example.com'), 'no example'),
+  qty: z.string().regex(/^[0-9]+$/).transform((v) => Number(v)).refine((n) => n > 0, 'at least one'),
+  tags: z.array(z.string().transform((t) => t.trim())).optional(),
+  note: z.string().optional().transform((v) => v ?? ''),
+}).transform((o) => ({ ...o, total: o.qty * 2 }))
+export const pre = z.preprocess((v) => String(v), z.string())
+export const piped = z.string().transform((v) => v.trim()).pipe(z.string().min(3))
+`)
+    const mod = await load(file)
+    assert.deepEqual(unrepresentable(mod.pre), ['$: preprocess'])
+    // The second schema's min(3) is not in the input schema: refused, never
+    // compiled without it.
+    assert.deepEqual(unrepresentable(mod.piped), ['$: pipe into a second schema, which the input schema does not carry'])
+    // Exports are read in alphabetical order; the first refused one stops the build.
+    await assert.rejects(() => compileZod('transformed.mjs', dir, write, files, load, null), /export piped: \$: pipe into a second schema/)
+    // The one export alone, through a module of its own.
+    await fs.writeFile(path.join(dir, 'order.mjs'), (await fs.readFile(file, 'utf8')).split('export const pre')[0])
+    await compileZod('order.mjs', dir, write, files, load, null)
+    const zod = (await load(path.join(dir, 'order.mjs'))).order
+    const src = await fs.readFile(path.join(dir, 'order.validators.mjs'), 'utf8')
+    const out = compileAway(src, path.join(dir, 'order.validators.mjs'), ata, { ir: true })
+    assert.ok(out && !out.code.includes('new Validator('))
+    const pageFile = path.join(dir, 'order-page.mjs'); await fs.writeFile(pageFile, out.code)
+    const page = await load(pageFile)
+    const docs = [{ email: ' Ada@B.co ', qty: '3', tags: [' a ', 'b '], note: undefined }, { email: 'ada@b.co', qty: '0' }, { email: 'x@example.com', qty: '2' }, { email: 'a@b.co', qty: 'x' }, { email: 'A@B.CO', qty: '1', note: 'n' }, {}]
+    for (const d of docs) {
+      const z = zod.safeParse(structuredClone(d))
+      const input = structuredClone(d)
+      const r = page.order.validate(input)
+      assert.equal(r.valid, z.success, `verdict on ${JSON.stringify(d)}`)
+      if (z.success) assert.deepEqual(r.data, z.data, `data on ${JSON.stringify(d)}`)
+      const untouched = structuredClone(d)
+      assert.equal(page.order.isValidObject(untouched), z.success)
+      assert.deepEqual(untouched, d, 'isValidObject leaves the input as it was')
+    }
+    // 'X@Example.com' passes the email check as written; only the lowercased
+    // value ends with '@example.com', so the refine must have seen that one.
+    const e = page.order.validate({ email: 'X@Example.com', qty: '2' }).errors
+    assert.deepEqual(e.map((x) => [x.instancePath, x.message]), [['/email', 'no example']], 'the refine after the transform sees the transformed value')
   })
 
   it('a refine that reads only its parameter is carried: the page gives zod verdicts, with zod path and message', async () => {

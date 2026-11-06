@@ -32,9 +32,15 @@
 //   the language's globals) is carried: its text is written into the module
 //   and run on the value at its place after the compiled check, with zod's
 //   message and path. Of 337 refine calls in 195 public TypeScript files,
-//   258 are such functions (2026-11-06). One that closes over an outside
-//   name, a `superRefine` (zod exposes no function for it), a transform, pipe
-//   or preprocess, has no form a page can carry, and `z.toJSONSchema` drops
+//   258 are such functions (2026-11-06). A `.transform(fn)` of the same
+//   kind is carried too, applied to the value in place once the check has
+//   passed, so `validate(data).data` is what zod's `parse` gives (93 of 153
+//   transforms in the same files). One that closes over an outside name, a
+//   `superRefine` or a transform that takes `ctx` (zod exposes no function
+//   for the first, and the second can raise issues), a `preprocess` (it runs
+//   before the schema, which the compiled check cannot) or a `pipe` into a
+//   second schema (the input schema does not carry it), has no form a page
+//   can carry, and `z.toJSONSchema` drops
 //   it without a word even with `unrepresentable: 'throw'`. The build refuses
 //   such a schema by export and path, so a page never accepts what the zod
 //   schema rejects. `dropRefinements: true` takes them out knowingly, and the
@@ -80,6 +86,26 @@ export function closesOver(text) {
   return [...used].filter((u) => !declared.has(u) && !GLOBALS.has(u))
 }
 
+// One check of a node: a refine the page can carry goes to `refines` as an
+// op at its location, in order; anything else is reported in `out`.
+function refineCheck(c, at, out, refines, tokens, placed, guard) {
+  const cd = c && c._zod && c._zod.def ? c._zod.def : null
+  if (!cd || cd.check !== 'custom') return
+  if (typeof cd.fn !== 'function') { out.push(`${at}: superRefine`); return }
+  const text = cd.fn.toString()
+  if (!placed) { out.push(`${at}: refine inside a union or record, which a page cannot place`); return }
+  const outside = closesOver(text)
+  if (outside.length) { out.push(`${at}: refine closes over ${outside.join(', ')}`); return }
+  if (refines === null) return
+  let message
+  try { message = typeof cd.error === 'function' ? cd.error() : cd.error } catch { message = undefined }
+  if (message !== null && typeof message === 'object') message = message.message
+  if (message !== undefined && typeof message !== 'string') { out.push(`${at}: refine with a message that is not text`); return }
+  const extra = Array.isArray(cd.path) ? cd.path : []
+  if (!extra.every((p) => typeof p === 'string' || typeof p === 'number')) { out.push(`${at}: refine with a path that is not names`); return }
+  refines.push({ at, tokens: tokens.slice(), kind: 'r', text, message, extra, guard })
+}
+
 // Walks a zod 4 definition for what JSON Schema cannot carry: a refine (a
 // `custom` check), a transform, a pipe or preprocess around it. Returns
 // `path: kind` strings in `out`, and in `refines` the refines a page can
@@ -92,29 +118,31 @@ export function unrepresentable(schema, at = '$', out = [], seen = new Set(), re
   if (!isZodSchema(schema) || seen.has(schema)) return out
   seen.add(schema)
   const def = schema._zod.def
-  for (const c of def.checks || []) {
-    const cd = c && c._zod && c._zod.def ? c._zod.def : null
-    const kind = cd ? cd.check : null
-    if (kind !== 'custom') continue
-    if (typeof cd.fn !== 'function') { out.push(`${at}: superRefine`); continue }
-    const text = cd.fn.toString()
-    const outside = closesOver(text)
-    if (!placed) { out.push(`${at}: refine inside a union or record, which a page cannot place`); continue }
-    if (outside.length) { out.push(`${at}: refine closes over ${outside.join(', ')}`); continue }
-    if (refines === null) continue
-    let message
-    try { message = typeof cd.error === 'function' ? cd.error() : cd.error } catch { message = undefined }
-    if (message !== null && typeof message === 'object') message = message.message
-    if (message !== undefined && typeof message !== 'string') { out.push(`${at}: refine with a message that is not text`); continue }
-    const extra = Array.isArray(cd.path) ? cd.path : []
-    if (!extra.every((p) => typeof p === 'string' || typeof p === 'number')) { out.push(`${at}: refine with a path that is not names`); continue }
-    refines.push({ at, tokens: tokens.slice(), text, message, extra, guard: TYPE_GUARD[def.type] || '' })
+  // A transform is a pipe whose out is the function: the in side first (its
+  // own checks and any earlier transform), then the function, then the
+  // checks written after it, which see the transformed value.
+  if (def.type === 'pipe' && def.out && def.out._zod && def.out._zod.def.type === 'transform') {
+    unrepresentable(def.in, at, out, seen, refines, tokens, placed)
+    const fn = def.out._zod.def.transform
+    const text = typeof fn === 'function' ? fn.toString() : ''
+    if (typeof fn !== 'function') out.push(`${at}: transform`)
+    else if (fn.length > 1) out.push(`${at}: transform takes ctx, which a page cannot answer`)
+    else if (!placed) out.push(`${at}: transform inside a union or record, which a page cannot place`)
+    else { const outside = closesOver(text); if (outside.length) out.push(`${at}: transform closes over ${outside.join(', ')}`); else if (refines !== null) refines.push({ at, tokens: tokens.slice(), kind: 't', text, guard: TYPE_GUARD[def.in._zod.def.type] || '' }) }
+    for (const c of def.checks || []) refineCheck(c, at, out, refines, tokens, placed, '')
+    return out
   }
+  for (const c of def.checks || []) refineCheck(c, at, out, refines, tokens, placed, TYPE_GUARD[def.type] || '')
   if (def.type === 'transform') out.push(`${at}: transform`)
   if (def.type === 'pipe') {
+    // A preprocess runs its function before the schema, which the compiled
+    // check cannot; a pipe into a second schema checks what the input
+    // schema does not carry. Neither has a form a page can carry.
     const inner = def.in && def.in._zod ? def.in._zod.def.type : '?'
-    if (inner === 'transform') out.push(`${at}: preprocess`)
+    if (inner === 'transform') { out.push(`${at}: preprocess`); unrepresentable(def.out, at, out, seen); return out }
+    out.push(`${at}: pipe into a second schema, which the input schema does not carry`)
     unrepresentable(def.in, at, out, seen); unrepresentable(def.out, at, out, seen)
+    return out
   }
   if (def.type === 'custom') out.push(`${at}: custom`)
   const go = (sub, label, tok, ok) => unrepresentable(sub, label, out, seen, refines, tok === undefined ? tokens : [...tokens, tok], placed && ok)
@@ -155,23 +183,33 @@ async function loadZod(fromFile) {
 // only once the schema's own checks pass, where zod lists both at once.
 const REFINE_RUNTIME = `const seg = (k) => String(k).replace(/~/g, '~0').replace(/\\//g, '~1')
 const guard = { s: (v) => typeof v === 'string', n: (v) => typeof v === 'number', o: (v) => v !== null && typeof v === 'object' && !Array.isArray(v), a: Array.isArray, b: (v) => typeof v === 'boolean' }
-function walkTo(data, tokens, i, at, cb) {
-  if (i === tokens.length) { cb(data, at); return }
+function walkTo(data, tokens, i, at, cb, set) {
+  if (i === tokens.length) { cb(data, at, set); return }
   const t = tokens[i]
-  if (t === null) { if (Array.isArray(data)) for (let j = 0; j < data.length; j++) walkTo(data[j], tokens, i + 1, at + '/' + j, cb) }
-  else if (data !== null && typeof data === 'object' && !Array.isArray(data) && Object.prototype.hasOwnProperty.call(data, t) && data[t] !== undefined) walkTo(data[t], tokens, i + 1, at + '/' + seg(t), cb)
+  if (t === null) { if (Array.isArray(data)) for (let j = 0; j < data.length; j++) walkTo(data[j], tokens, i + 1, at + '/' + j, cb, (nv) => { data[j] = nv }) }
+  else if (data !== null && typeof data === 'object' && !Array.isArray(data) && Object.prototype.hasOwnProperty.call(data, t) && data[t] !== undefined) walkTo(data[t], tokens, i + 1, at + '/' + seg(t), cb, (nv) => { data[t] = nv })
 }
-function refined(r, data, refines) {
+// ops at one place, in order: ['t', fn] transforms the value, ['r', fn,
+// message, extra] checks it. With a setter, a transformed value is written
+// back, as a filled default is; without one it only flows into later ops.
+function runOps(v, at, ops, g, errors, set, tokens) {
+  if (g && !guard[g](v)) return
+  for (const op of ops) {
+    if (op[0] === 't') { v = op[1](v); if (set) set(v); continue }
+    if (!op[1](v) && errors) errors.push({ keyword: 'refine', instancePath: at + op[3].map((p) => '/' + seg(p)).join(''), schemaPath: '#' + tokens.map((t) => t === null ? '/items' : '/properties/' + seg(t)).join('') + '/refine', params: {}, message: op[2] })
+    else if (!op[1](v)) return false
+  }
+  return true
+}
+function refined(r, data, places) {
   if (!r.valid) return r
   const errors = []
-  for (const [tokens, fn, message, extra, g] of refines) walkTo(data, tokens, 0, '', (v, at) => {
-    if (g && !guard[g](v)) return
-    if (!fn(v)) errors.push({ keyword: 'refine', instancePath: at + extra.map((p) => '/' + seg(p)).join(''), schemaPath: '#' + tokens.map((t) => t === null ? '/items' : '/properties/' + seg(t)).join('') + '/refine', params: {}, message })
-  })
-  return errors.length ? { valid: false, errors } : r
+  const box = { d: data }
+  for (const [tokens, g, ops] of places) walkTo(box, ['d', ...tokens], 0, '', (v, at, set) => runOps(v, at.slice(2), ops, g, errors, set, tokens))
+  return errors.length ? { valid: false, errors } : (box.d === data ? r : { valid: true, data: box.d, errors: r.errors })
 }
-function refinesOk(data, refines) {
-  for (const [tokens, fn, , , g] of refines) { let ok = true; walkTo(data, tokens, 0, '', (v) => { if (ok && !(g && !guard[g](v)) && !fn(v)) ok = false }); if (!ok) return false }
+function refinesOk(data, places) {
+  for (const [tokens, g, ops] of places) { let ok = true; walkTo(data, tokens, 0, '', (v, at) => { if (ok && runOps(v, at, ops, g, null, null, tokens) === false) ok = false }); if (!ok) return false }
   return true
 }
 `
@@ -190,7 +228,15 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
     const lit = text.includes('"__proto__"') ? `JSON.parse(${JSON.stringify(text)})` : text
     const rl = refines[name] || []
     if (rl.length) {
-      const list = rl.map((r) => `[${JSON.stringify(r.tokens)}, ${r.text}, ${JSON.stringify(r.message === undefined ? 'Invalid input' : r.message)}, ${JSON.stringify(r.extra)}, ${JSON.stringify(r.guard)}]`).join(',\n  ')
+      // The ops of one place together, in the order the walk found them.
+      const places = []
+      for (const r of rl) {
+        const key = JSON.stringify(r.tokens)
+        let p = places.find((x) => x.key === key)
+        if (!p) { p = { key, tokens: r.tokens, guard: r.guard, ops: [] }; places.push(p) }
+        p.ops.push(r.kind === 't' ? `['t', ${r.text}]` : `['r', ${r.text}, ${JSON.stringify(r.message === undefined ? 'Invalid input' : r.message)}, ${JSON.stringify(r.extra)}]`)
+      }
+      const list = places.map((p) => `[${JSON.stringify(p.tokens)}, ${JSON.stringify(p.guard)}, [${p.ops.join(', ')}]]`).join(',\n  ')
       js += `const v${i} = new Validator(${lit}${opts})\nconst r${i} = [\n  ${list}\n]\nexport const ${name} = { validate: (data) => refined(v${i}.validate(data), data, r${i}), isValidObject: (data) => v${i}.isValidObject(data) && refinesOk(data, r${i}) }\n`
     } else {
       js += `const v${i} = new Validator(${lit}${opts})\nexport const ${name} = { validate: (data) => v${i}.validate(data), isValidObject: (data) => v${i}.isValidObject(data) }\n`
