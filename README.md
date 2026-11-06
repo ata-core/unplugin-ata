@@ -468,11 +468,11 @@ namespace import, or through a chain of members, calls and top-level constants
 publicProcedure = t.procedure`). `standardConsumers: ['my-router']` adds
 packages; a chain whose root is not on the list takes the wrapper with errors
 as before.
-Bundled with esbuild and gzipped, ata-validator 1.61.3 and the plugin's next
-release against 0.11.1, one validator with an email field, a length, a range
+Bundled with esbuild and gzipped, ata-validator 1.61.3 and the plugin's 0.12.0
+against 0.11.1, one validator with an email field, a length, a range
 and a default:
 
-| app | framework alone | ata runtime | plugin 0.11.1 | plugin now |
+| app | framework alone | ata runtime | plugin 0.11.1 | plugin 0.12.0 |
 |---|---|---|---|---|
 | Hono 4.13 route, `sValidator`, for Workers | 7.7 KB | 66.7 KB | 21.0 KB | 12.2 KB |
 | Elysia 1.4 route, `{ body }` hook | 106.8 KB | 258.4 KB | 120.1 KB | 110.1 KB |
