@@ -140,11 +140,10 @@ export const piped = z.string().transform((v) => v.trim()).pipe(z.string().min(3
 `)
     const mod = await load(file)
     assert.deepEqual(unrepresentable(mod.pre), ['$: preprocess'])
-    // The second schema's min(3) is not in the input schema: refused, never
-    // compiled without it.
-    assert.deepEqual(unrepresentable(mod.piped), ['$: pipe into a second schema, which the input schema does not carry'])
-    // Exports are read in alphabetical order; the first refused one stops the build.
-    await assert.rejects(() => compileZod('transformed.mjs', dir, write, files, load, null), /export piped: \$: pipe into a second schema/)
+    // A pipe into a second schema is carried: the second schema becomes a
+    // check of its own on the transformed value (tested below).
+    assert.deepEqual(unrepresentable(mod.piped), [])
+    await assert.rejects(() => compileZod('transformed.mjs', dir, write, files, load, null), /export pre: \$: preprocess/)
     // The one export alone, through a module of its own.
     await fs.writeFile(path.join(dir, 'order.mjs'), (await fs.readFile(file, 'utf8')).split('export const pre')[0])
     await compileZod('order.mjs', dir, write, files, load, null)
@@ -169,6 +168,35 @@ export const piped = z.string().transform((v) => v.trim()).pipe(z.string().min(3
     // value ends with '@example.com', so the refine must have seen that one.
     const e = page.order.validate({ email: 'X@Example.com', qty: '2' }).errors
     assert.deepEqual(e.map((x) => [x.instancePath, x.message]), [['/email', 'no example']], 'the refine after the transform sees the transformed value')
+  })
+
+  it('a pipe into a second schema checks the transformed value with a second compiled check at its place', async () => {
+    const file = path.join(dir, 'piped.mjs')
+    await fs.writeFile(file, `import { z } from 'zod'
+export const form = z.object({
+  qty: z.string().regex(/^-?[0-9]+$/).transform((v) => Number(v)).pipe(z.number().int().min(1).max(99)),
+  name: z.string().transform((v) => v.trim()).pipe(z.string().min(3)).refine((v) => v !== 'bad', 'no bad'),
+  ids: z.array(z.string().transform((v) => v.split(',').map(Number)).pipe(z.array(z.number().int()).min(1))).optional(),
+})
+`)
+    await compileZod('piped.mjs', dir, write, files, load, null)
+    const src = await fs.readFile(path.join(dir, 'piped.validators.mjs'), 'utf8')
+    assert.equal((src.match(/new Validator\(/g) || []).length, 4, 'the main check and one per pipe')
+    const zod = (await load(file)).form
+    const out = compileAway(src, path.join(dir, 'piped.validators.mjs'), ata, { ir: true })
+    assert.ok(out && !out.code.includes('new Validator('), 'every check is compiled for the page')
+    const pageFile = path.join(dir, 'piped-page.mjs'); await fs.writeFile(pageFile, out.code)
+    const page = await load(pageFile)
+    const docs = [{ qty: '5', name: ' ada ' }, { qty: '0', name: 'ada' }, { qty: '100', name: 'ada' }, { qty: '5', name: '  ab ' }, { qty: '5', name: ' bad ' }, { qty: '5', name: 'ada', ids: ['1,2', '3'] }, { qty: '5', name: 'ada', ids: ['1.5'] }, { qty: '5', name: 'ada', ids: [''] }, { qty: 'x', name: 'ada' }, {}]
+    for (const d of docs) {
+      const z = zod.safeParse(structuredClone(d))
+      const r = page.form.validate(structuredClone(d))
+      assert.equal(r.valid, z.success, `verdict on ${JSON.stringify(d)}`)
+      if (z.success) assert.deepEqual(r.data, z.data, `data on ${JSON.stringify(d)}`)
+      assert.equal(page.form.isValidObject(structuredClone(d)), z.success)
+    }
+    const e = page.form.validate({ qty: '100', name: '  ab ' }).errors
+    assert.deepEqual(e.map((x) => [x.instancePath, x.keyword]), [['/qty', 'maximum'], ['/name', 'minLength']], 'the second checks report at their place')
   })
 
   it('a refine that reads only its parameter is carried: the page gives zod verdicts, with zod path and message', async () => {

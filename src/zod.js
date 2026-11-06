@@ -140,8 +140,16 @@ export function unrepresentable(schema, at = '$', out = [], seen = new Set(), re
     // schema does not carry. Neither has a form a page can carry.
     const inner = def.in && def.in._zod ? def.in._zod.def.type : '?'
     if (inner === 'transform') { out.push(`${at}: preprocess`); unrepresentable(def.out, at, out, seen); return out }
-    out.push(`${at}: pipe into a second schema, which the input schema does not carry`)
-    unrepresentable(def.in, at, out, seen); unrepresentable(def.out, at, out, seen)
+    // A pipe into a second schema: the in side's ops, then the second
+    // schema as a compiled check of its own on the value as it stands, then
+    // the second schema's refines and transforms, all at this place. The
+    // check is written beside the main one and compiled away like it.
+    if (!placed) { out.push(`${at}: pipe inside a union or record, which a page cannot place`); return out }
+    unrepresentable(def.in, at, out, seen, refines, tokens, placed)
+    if (refines !== null) refines.push({ at, tokens: tokens.slice(), kind: 'c', schema: def.out, guard: '' })
+    unrepresentable(def.out, at, out, seen, refines, tokens, placed)
+    // The checks written after the pipe hang on the pipe node itself.
+    for (const c of def.checks || []) refineCheck(c, at, out, refines, tokens, placed, '')
     return out
   }
   if (def.type === 'custom') out.push(`${at}: custom`)
@@ -196,6 +204,12 @@ function runOps(v, at, ops, g, errors, set, tokens) {
   if (g && !guard[g](v)) return
   for (const op of ops) {
     if (op[0] === 't') { v = op[1](v); if (set) set(v); continue }
+    if (op[0] === 'c') {
+      if (!errors) { if (!op[1](v)) return false; continue }
+      const r = op[2](v)
+      if (!r.valid) for (const e of r.errors) errors.push({ ...e, instancePath: at + e.instancePath })
+      continue
+    }
     if (!op[1](v) && errors) errors.push({ keyword: 'refine', instancePath: at + op[3].map((p) => '/' + seg(p)).join(''), schemaPath: '#' + tokens.map((t) => t === null ? '/items' : '/properties/' + seg(t)).join('') + '/refine', params: {}, message: op[2] })
     else if (!op[1](v)) return false
   }
@@ -230,14 +244,20 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
     if (rl.length) {
       // The ops of one place together, in the order the walk found them.
       const places = []
+      let checks = ''; let c = 0
       for (const r of rl) {
         const key = JSON.stringify(r.tokens)
         let p = places.find((x) => x.key === key)
         if (!p) { p = { key, tokens: r.tokens, guard: r.guard, ops: [] }; places.push(p) }
-        p.ops.push(r.kind === 't' ? `['t', ${r.text}]` : `['r', ${r.text}, ${JSON.stringify(r.message === undefined ? 'Invalid input' : r.message)}, ${JSON.stringify(r.extra)}]`)
+        if (r.kind === 'c') {
+          const t = JSON.stringify(r.json); const l = t.includes('"__proto__"') ? `JSON.parse(${JSON.stringify(t)})` : t
+          checks += `const v${i}_${c} = new Validator(${l}${opts})\n`
+          // Member calls only, so the build compiles this check away too.
+          p.ops.push(`['c', (v) => v${i}_${c}.isValidObject(v), (v) => v${i}_${c}.validate(v)]`); c++
+        } else p.ops.push(r.kind === 't' ? `['t', ${r.text}]` : `['r', ${r.text}, ${JSON.stringify(r.message === undefined ? 'Invalid input' : r.message)}, ${JSON.stringify(r.extra)}]`)
       }
       const list = places.map((p) => `[${JSON.stringify(p.tokens)}, ${JSON.stringify(p.guard)}, [${p.ops.join(', ')}]]`).join(',\n  ')
-      js += `const v${i} = new Validator(${lit}${opts})\nconst r${i} = [\n  ${list}\n]\nexport const ${name} = { validate: (data) => refined(v${i}.validate(data), data, r${i}), isValidObject: (data) => v${i}.isValidObject(data) && refinesOk(data, r${i}) }\n`
+      js += `const v${i} = new Validator(${lit}${opts})\n${checks}const r${i} = [\n  ${list}\n]\nexport const ${name} = { validate: (data) => refined(v${i}.validate(data), data, r${i}), isValidObject: (data) => v${i}.isValidObject(data) && refinesOk(data, r${i}) }\n`
     } else {
       js += `const v${i} = new Validator(${lit}${opts})\nexport const ${name} = { validate: (data) => v${i}.validate(data), isValidObject: (data) => v${i}.isValidObject(data) }\n`
     }
@@ -274,14 +294,19 @@ export async function schemasOf(file, mod, entry, log, refinesOut = null) {
       }
       if (log) log.warn(`unplugin-ata: zod: ${path.basename(file)} export ${name}: dropped ${dropped.join(', ')} (dropRefinements)`)
     }
-    let json
-    try {
-      json = z.toJSONSchema(schema, { target: 'draft-2020-12', io: 'input', unrepresentable: 'throw' })
-    } catch (e) {
-      throw new Error(`unplugin-ata: zod: ${path.basename(file)} export ${name}: ${e && e.message ? e.message : e}`)
+    const convert = (s) => {
+      let json
+      try {
+        json = z.toJSONSchema(s, { target: 'draft-2020-12', io: 'input', unrepresentable: 'throw' })
+      } catch (e) {
+        throw new Error(`unplugin-ata: zod: ${path.basename(file)} export ${name}: ${e && e.message ? e.message : e}`)
+      }
+      delete json.$schema
+      return patternOnly(json)
     }
-    delete json.$schema
-    out[name] = patternOnly(json)
+    out[name] = convert(schema)
+    // The second schema of each pipe, as JSON for a check of its own.
+    for (const op of carried) if (op.kind === 'c') { op.json = convert(op.schema); delete op.schema }
   }
   return out
 }
