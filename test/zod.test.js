@@ -99,6 +99,16 @@ describe('zod', () => {
     const page = await load(path.join(dir, 'events.validators.mjs'))
     assert.equal(page.click.validate({ x: 1, y: 2 }).valid, true)
     assert.equal(page.click.validate({ x: 1 }).valid, false)
+    // The type is zod's own input type, not one written from the schema.
+    const dts = await fs.readFile(path.join(dir, 'events.validators.d.mts'), 'utf8')
+    assert.match(dts, /export type ClickInput = z\.input<typeof import\("\.\/events\.js"\)\.click>/)
+    await fs.writeFile(path.join(dir, 'consumer.ts'), `import { click } from './events.validators.mjs'\ntype Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false\nconst r = click.validate({})\nif (r.valid) { const ok: Equal<typeof r.data, { x: number; y: number }> = true; void ok }\nconst e: string = r.valid ? '' : r.errors[0].instancePath\nvoid e\n`)
+    await fs.writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: 'nodenext', moduleResolution: 'nodenext', target: 'es2022', skipLibCheck: true, types: [] }, files: ['consumer.ts'] }))
+    const { execFileSync } = await import('node:child_process')
+    const tsc = path.join(here, '..', 'node_modules', '.bin', 'tsc')
+    let out = ''
+    try { out = execFileSync(tsc, ['-p', path.join(dir, 'tsconfig.json')], { encoding: 'utf8', stdio: 'pipe' }) } catch (e) { out = String(e.stdout || '') + String(e.stderr || '') }
+    assert.equal(out.trim(), '', `the consumer type-checks against zod's own type:\n${out}`)
   })
 
   it('a refine or transform stops the build by export and path; dropRefinements takes them out knowingly', async () => {
