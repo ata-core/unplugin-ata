@@ -28,16 +28,22 @@
 //   string (email, uuid, url, ...), the pattern alone is kept: zod's verdict
 //   is its regex, and ata's format check beside it would reject what zod
 //   accepts and carry a second checker for nothing.
-// - A refinement, transform, pipe or preprocess has no JSON Schema form, and
-//   `z.toJSONSchema` drops it without a word, even with `unrepresentable:
-//   'throw'`. The build refuses such a schema by export and path, so a page
-//   never accepts what the zod schema rejects. `dropRefinements: true` takes
-//   them out knowingly, and the build says which ones; the server's zod still
-//   runs them.
+// - A `.refine(fn)` whose function reads nothing but its own parameter (and
+//   the language's globals) is carried: its text is written into the module
+//   and run on the value at its place after the compiled check, with zod's
+//   message and path. Of 337 refine calls in 195 public TypeScript files,
+//   258 are such functions (2026-11-06). One that closes over an outside
+//   name, a `superRefine` (zod exposes no function for it), a transform, pipe
+//   or preprocess, has no form a page can carry, and `z.toJSONSchema` drops
+//   it without a word even with `unrepresentable: 'throw'`. The build refuses
+//   such a schema by export and path, so a page never accepts what the zod
+//   schema rejects. `dropRefinements: true` takes them out knowingly, and the
+//   build says which ones; the server's zod still runs them.
 
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { parseExpression } from '@babel/parser'
 
 const pascal = (s) => s.replace(/(^|[^A-Za-z0-9])([a-z0-9])/g, (_, __, c) => c.toUpperCase()).replace(/[^A-Za-z0-9]/g, '')
 
@@ -48,16 +54,61 @@ export function entries(option) {
 
 const isZodSchema = (v) => v !== null && typeof v === 'object' && v._zod !== undefined && v._zod.def !== null && typeof v._zod.def === 'object'
 
+// Globals a refine may read; everything else it names is a closure.
+const GLOBALS = new Set(['Number', 'Date', 'Math', 'RegExp', 'JSON', 'Object', 'Array', 'String', 'Boolean', 'isNaN', 'isFinite', 'parseInt', 'parseFloat', 'Intl', 'Set', 'Map', 'URL', 'encodeURIComponent', 'decodeURIComponent', 'undefined', 'NaN', 'Infinity', 'Symbol', 'Error', 'BigInt', 'structuredClone', 'atob', 'btoa', 'Reflect'])
+
+const TYPE_GUARD = { string: 's', number: 'n', int: 'n', bigint: 'n', object: 'o', array: 'a', boolean: 'b' }
+
+// The names a function's text reads that it did not declare: none means the
+// function can be written into another module as it is.
+export function closesOver(text) {
+  let fn
+  try { fn = parseExpression(text, { plugins: ['typescript'] }) } catch { return ['(unparsed)'] }
+  const declared = new Set(); const used = new Set(); const props = new Set()
+  const walk = (n, cb) => { if (!n || typeof n !== 'object') return; if (Array.isArray(n)) { n.forEach((x) => walk(x, cb)); return } cb(n); for (const k of Object.keys(n)) if (k !== 'loc' && k !== 'extra' && k !== 'leadingComments' && k !== 'trailingComments' && k !== 'innerComments') walk(n[k], cb) }
+  const bind = (p) => walk(p, (n) => { if (n.type === 'Identifier') declared.add(n.name) })
+  walk(fn, (n) => {
+    if (n.type === 'VariableDeclarator') bind(n.id)
+    if (n.type === 'FunctionDeclaration' && n.id) declared.add(n.id.name)
+    if (/Function/.test(n.type)) n.params.forEach(bind)
+    if (n.type === 'CatchClause' && n.param) bind(n.param)
+    if (n.type === 'MemberExpression' && !n.computed && n.property.type === 'Identifier') props.add(n.property)
+    if ((n.type === 'ObjectProperty' || n.type === 'ObjectMethod') && !n.computed && n.key.type === 'Identifier' && !n.shorthand) props.add(n.key)
+    if (n.type === 'ThisExpression') used.add('this')
+  })
+  walk(fn, (n) => { if (n.type === 'Identifier' && !props.has(n)) used.add(n.name) })
+  return [...used].filter((u) => !declared.has(u) && !GLOBALS.has(u))
+}
+
 // Walks a zod 4 definition for what JSON Schema cannot carry: a refine (a
 // `custom` check), a transform, a pipe or preprocess around it. Returns
-// `path: kind` strings. Lazy schemas are followed once.
-export function unrepresentable(schema, at = '$', out = [], seen = new Set()) {
+// `path: kind` strings in `out`, and in `refines` the refines a page can
+// carry: their place as tokens (a property name, or null for each array
+// element), the function's text, the message, the issue path and a type
+// guard. Inside a union, intersection, record, tuple or lazy schema a refine
+// cannot be placed, so it is reported, never carried. Lazy schemas are
+// followed once.
+export function unrepresentable(schema, at = '$', out = [], seen = new Set(), refines = null, tokens = [], placed = true) {
   if (!isZodSchema(schema) || seen.has(schema)) return out
   seen.add(schema)
   const def = schema._zod.def
   for (const c of def.checks || []) {
-    const kind = c && c._zod && c._zod.def ? c._zod.def.check : null
-    if (kind === 'custom') out.push(`${at}: refine`)
+    const cd = c && c._zod && c._zod.def ? c._zod.def : null
+    const kind = cd ? cd.check : null
+    if (kind !== 'custom') continue
+    if (typeof cd.fn !== 'function') { out.push(`${at}: superRefine`); continue }
+    const text = cd.fn.toString()
+    const outside = closesOver(text)
+    if (!placed) { out.push(`${at}: refine inside a union or record, which a page cannot place`); continue }
+    if (outside.length) { out.push(`${at}: refine closes over ${outside.join(', ')}`); continue }
+    if (refines === null) continue
+    let message
+    try { message = typeof cd.error === 'function' ? cd.error() : cd.error } catch { message = undefined }
+    if (message !== null && typeof message === 'object') message = message.message
+    if (message !== undefined && typeof message !== 'string') { out.push(`${at}: refine with a message that is not text`); continue }
+    const extra = Array.isArray(cd.path) ? cd.path : []
+    if (!extra.every((p) => typeof p === 'string' || typeof p === 'number')) { out.push(`${at}: refine with a path that is not names`); continue }
+    refines.push({ at, tokens: tokens.slice(), text, message, extra, guard: TYPE_GUARD[def.type] || '' })
   }
   if (def.type === 'transform') out.push(`${at}: transform`)
   if (def.type === 'pipe') {
@@ -66,17 +117,18 @@ export function unrepresentable(schema, at = '$', out = [], seen = new Set()) {
     unrepresentable(def.in, at, out, seen); unrepresentable(def.out, at, out, seen)
   }
   if (def.type === 'custom') out.push(`${at}: custom`)
-  if (def.shape) for (const k of Object.keys(def.shape)) unrepresentable(def.shape[k], `${at}.${k}`, out, seen)
-  if (def.element) unrepresentable(def.element, `${at}[]`, out, seen)
-  if (def.innerType) unrepresentable(def.innerType, at, out, seen)
-  if (def.options) def.options.forEach((o, i) => unrepresentable(o, `${at}|${i}`, out, seen))
-  if (def.items) def.items.forEach((o, i) => unrepresentable(o, `${at}[${i}]`, out, seen))
-  if (def.rest) unrepresentable(def.rest, `${at}[...]`, out, seen)
-  if (def.keyType) unrepresentable(def.keyType, `${at}{key}`, out, seen)
-  if (def.valueType) unrepresentable(def.valueType, `${at}{}`, out, seen)
-  if (def.left) unrepresentable(def.left, `${at}&0`, out, seen)
-  if (def.right) unrepresentable(def.right, `${at}&1`, out, seen)
-  if (def.type === 'lazy' && typeof def.getter === 'function') { try { unrepresentable(def.getter(), at, out, seen) } catch {} }
+  const go = (sub, label, tok, ok) => unrepresentable(sub, label, out, seen, refines, tok === undefined ? tokens : [...tokens, tok], placed && ok)
+  if (def.shape) for (const k of Object.keys(def.shape)) go(def.shape[k], `${at}.${k}`, k, true)
+  if (def.element) go(def.element, `${at}[]`, null, true)
+  if (def.innerType) go(def.innerType, at, undefined, true)
+  if (def.options) def.options.forEach((o, i) => go(o, `${at}|${i}`, undefined, false))
+  if (def.items) def.items.forEach((o, i) => go(o, `${at}[${i}]`, undefined, false))
+  if (def.rest) go(def.rest, `${at}[...]`, undefined, false)
+  if (def.keyType) go(def.keyType, `${at}{key}`, undefined, false)
+  if (def.valueType) go(def.valueType, `${at}{}`, undefined, false)
+  if (def.left) go(def.left, `${at}&0`, undefined, false)
+  if (def.right) go(def.right, `${at}&1`, undefined, false)
+  if (def.type === 'lazy' && typeof def.getter === 'function') { try { go(def.getter(), at, undefined, false) } catch {} }
   return out
 }
 
@@ -97,9 +149,37 @@ async function loadZod(fromFile) {
 // `z.input<typeof import('./widget.js').widgetEvent>`, the type the author
 // already has as `z.infer`. A JavaScript source gives no type that way, so
 // its type is written from the schema.
-export function render(schemas, validatorOptions, toTypeScript, source, typeImport = null) {
+// The refines a module carries, run on the value at their place after the
+// compiled check passed, as zod runs a node's refinements after its own
+// checks: the verdict is zod's. In an error list a refine's error appears
+// only once the schema's own checks pass, where zod lists both at once.
+const REFINE_RUNTIME = `const seg = (k) => String(k).replace(/~/g, '~0').replace(/\\//g, '~1')
+const guard = { s: (v) => typeof v === 'string', n: (v) => typeof v === 'number', o: (v) => v !== null && typeof v === 'object' && !Array.isArray(v), a: Array.isArray, b: (v) => typeof v === 'boolean' }
+function walkTo(data, tokens, i, at, cb) {
+  if (i === tokens.length) { cb(data, at); return }
+  const t = tokens[i]
+  if (t === null) { if (Array.isArray(data)) for (let j = 0; j < data.length; j++) walkTo(data[j], tokens, i + 1, at + '/' + j, cb) }
+  else if (data !== null && typeof data === 'object' && !Array.isArray(data) && Object.prototype.hasOwnProperty.call(data, t) && data[t] !== undefined) walkTo(data[t], tokens, i + 1, at + '/' + seg(t), cb)
+}
+function refined(r, data, refines) {
+  if (!r.valid) return r
+  const errors = []
+  for (const [tokens, fn, message, extra, g] of refines) walkTo(data, tokens, 0, '', (v, at) => {
+    if (g && !guard[g](v)) return
+    if (!fn(v)) errors.push({ keyword: 'refine', instancePath: at + extra.map((p) => '/' + seg(p)).join(''), schemaPath: '#' + tokens.map((t) => t === null ? '/items' : '/properties/' + seg(t)).join('') + '/refine', params: {}, message })
+  })
+  return errors.length ? { valid: false, errors } : r
+}
+function refinesOk(data, refines) {
+  for (const [tokens, fn, , , g] of refines) { let ok = true; walkTo(data, tokens, 0, '', (v) => { if (ok && !(g && !guard[g](v)) && !fn(v)) ok = false }); if (!ok) return false }
+  return true
+}
+`
+
+export function render(schemas, validatorOptions, toTypeScript, source, typeImport = null, refines = {}) {
   const opts = validatorOptions && Object.keys(validatorOptions).length ? ', ' + JSON.stringify(validatorOptions) : ''
-  let js = `// Generated by @ata-project/unplugin from ${source}. Do not edit.\n// One validator per exported zod schema (the input schema); a page's build compiles each.\nimport { Validator } from 'ata-validator'\n\n`
+  const anyRefine = Object.values(refines).some((l) => l && l.length)
+  let js = `// Generated by @ata-project/unplugin from ${source}. Do not edit.\n// One validator per exported zod schema (the input schema); a page's build compiles each.${anyRefine ? '\n// Refinements are written in and run after the compiled check, on the value at their place.' : ''}\nimport { Validator } from 'ata-validator'\n\n${anyRefine ? REFINE_RUNTIME + '\n' : ''}`
   let dts = `// Generated by @ata-project/unplugin from ${source}. Do not edit.\n${typeImport ? "import type { z } from 'zod'\n" : ''}export interface ValidationError { keyword: string; instancePath: string; schemaPath: string; params: Record<string, unknown>; message: string; [field: string]: unknown }\nexport type Result<T> = { valid: true; data: T; errors: readonly never[] } | { valid: false; errors: ValidationError[] }\n\n`
   const taken = new Set()
   Object.keys(schemas).forEach((name, i) => {
@@ -108,7 +188,13 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
     taken.add(ns)
     const text = JSON.stringify(schemas[name])
     const lit = text.includes('"__proto__"') ? `JSON.parse(${JSON.stringify(text)})` : text
-    js += `const v${i} = new Validator(${lit}${opts})\nexport const ${name} = { validate: (data) => v${i}.validate(data), isValidObject: (data) => v${i}.isValidObject(data) }\n`
+    const rl = refines[name] || []
+    if (rl.length) {
+      const list = rl.map((r) => `[${JSON.stringify(r.tokens)}, ${r.text}, ${JSON.stringify(r.message === undefined ? 'Invalid input' : r.message)}, ${JSON.stringify(r.extra)}, ${JSON.stringify(r.guard)}]`).join(',\n  ')
+      js += `const v${i} = new Validator(${lit}${opts})\nconst r${i} = [\n  ${list}\n]\nexport const ${name} = { validate: (data) => refined(v${i}.validate(data), data, r${i}), isValidObject: (data) => v${i}.isValidObject(data) && refinesOk(data, r${i}) }\n`
+    } else {
+      js += `const v${i} = new Validator(${lit}${opts})\nexport const ${name} = { validate: (data) => v${i}.validate(data), isValidObject: (data) => v${i}.isValidObject(data) }\n`
+    }
     if (typeImport) {
       dts += `export type ${ns}Input = z.input<typeof import(${JSON.stringify(typeImport)}).${name}>\nexport declare const ${name}: { validate(data: unknown): Result<${ns}Input>; isValidObject(data: unknown): data is ${ns}Input }\n\n`
       return
@@ -126,14 +212,16 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
 
 // The JSON Schemas of one module's zod exports, or a thrown error naming
 // what cannot be carried.
-export async function schemasOf(file, mod, entry, log) {
+export async function schemasOf(file, mod, entry, log, refinesOut = null) {
   const names = Object.keys(mod).filter((k) => isZodSchema(mod[k]))
   if (!names.length) throw new Error(`unplugin-ata: zod: ${file} exports no zod schema (a zod 4 schema is an object with _zod)`)
   const z = await loadZod(file)
   const out = {}
   for (const name of names) {
     const schema = mod[name]
-    const dropped = unrepresentable(schema)
+    const carried = []
+    const dropped = unrepresentable(schema, '$', [], new Set(), carried)
+    if (refinesOut !== null) refinesOut[name] = carried
     if (dropped.length) {
       if (!entry.dropRefinements) {
         throw new Error(`unplugin-ata: zod: ${path.basename(file)} export ${name}: ${dropped.join(', ')}. z.toJSONSchema drops these without a word, and a page would then accept what the zod schema rejects. Write the rule as a JSON Schema constraint (pattern, minimum, enum), move a transform after validation, or set dropRefinements: true to take them out knowingly.`)
@@ -175,7 +263,8 @@ export async function compileZod(option, root, write, resolveFiles, importModule
       if (/\.validators\.(mjs|d\.mts)$/.test(file)) continue
       const abs = path.resolve(root, file)
       const mod = await importModule(abs, fresh)
-      const schemas = await schemasOf(abs, mod, entry, log)
+      const refines = {}
+      const schemas = await schemasOf(abs, mod, entry, log, refines)
       const vo = entry.validatorOptions || {}
       const opts = {}
       if (vo.richErrors !== true) opts.richErrors = false
@@ -185,7 +274,7 @@ export async function compileZod(option, root, write, resolveFiles, importModule
       // TypeScript resolves './widget.js' to widget.ts under both the bundler
       // and the nodenext resolution; a .mts source is imported as .mjs.
       const typeImport = ext === '.ts' || ext === '.tsx' ? './' + path.basename(base) + '.js' : ext === '.mts' ? './' + path.basename(base) + '.mjs' : null
-      const { js, dts } = render(schemas, opts, toTypeScript, path.basename(abs), typeImport)
+      const { js, dts } = render(schemas, opts, toTypeScript, path.basename(abs), typeImport, refines)
       const changed = (await write(base + '.validators.mjs', js)) | (await write(base + '.validators.d.mts', dts))
       out.push({ file: abs, module: base + '.validators.mjs', exports: Object.keys(schemas), changed: !!changed })
     }

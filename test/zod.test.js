@@ -114,14 +114,63 @@ describe('zod', () => {
   it('a refine or transform stops the build by export and path; dropRefinements takes them out knowingly', async () => {
     const file = path.join(dir, 'refined.mjs')
     await fs.writeFile(file, `import { z } from 'zod'\nexport const signup = z.object({ email: z.string().email().refine((v) => !v.endsWith('@example.com'), 'no example'), name: z.string().transform((v) => v.trim()), tags: z.array(z.string().refine((t) => t.length < 10)) })\n`)
+    // The two refines read only their parameter and are carried; the
+    // transform is what refuses the export.
     const found = unrepresentable((await load(file)).signup)
-    assert.deepEqual(found, ['$.email: refine', '$.name: transform', '$.tags[]: refine'])
-    await assert.rejects(() => compileZod('refined.mjs', dir, write, files, load, null), /refined\.mjs export signup: \$\.email: refine, \$\.name: transform, \$\.tags\[\]: refine/)
+    assert.deepEqual(found, ['$.name: transform'])
+    await assert.rejects(() => compileZod('refined.mjs', dir, write, files, load, null), /refined\.mjs export signup: \$\.name: transform\./)
     const warnings = []
     const r = await compileZod({ files: 'refined.mjs', dropRefinements: true }, dir, write, files, load, { warn: (m) => warnings.push(m) })
     assert.deepEqual(r[0].exports, ['signup'])
     assert.equal(warnings.length, 1)
-    assert.match(warnings[0], /dropped \$\.email: refine/)
+    assert.match(warnings[0], /dropped \$\.name: transform/)
+  })
+
+  it('a refine that reads only its parameter is carried: the page gives zod verdicts, with zod path and message', async () => {
+    const file = path.join(dir, 'carried.mjs')
+    await fs.writeFile(file, `import { z } from 'zod'
+export const signup = z.object({
+  email: z.string().email().refine((v) => !v.endsWith('@example.com'), 'no example addresses'),
+  password: z.string().min(8).refine((v) => /[0-9]/.test(v) && /[a-z]/.test(v), { message: 'needs a digit and a letter' }),
+  tags: z.array(z.string().refine((t) => t.length < 10)).optional(),
+  dates: z.object({ from: z.string(), to: z.string() }).refine((d) => d.from <= d.to, { message: 'from after to', path: ['to'] }),
+}).refine((o) => o.email !== o.password, 'password equals email')
+`)
+    const r = await compileZod('carried.mjs', dir, write, files, load, null)
+    assert.deepEqual(r[0].exports, ['signup'])
+    const src = await fs.readFile(path.join(dir, 'carried.validators.mjs'), 'utf8')
+    assert.ok(src.includes("(v) => !v.endsWith('@example.com')") && src.includes('function refined('), 'the refine text and the runner are in the module')
+    const zod = await load(file)
+    const out = compileAway(src, path.join(dir, 'carried.validators.mjs'), ata, { ir: true })
+    assert.ok(out && !out.code.includes('new Validator('), 'the validator is compiled for the page')
+    const pageFile = path.join(dir, 'carried-page.mjs'); await fs.writeFile(pageFile, out.code)
+    const page = await load(pageFile)
+    const base = { email: 'a@b.co', password: 'abc12345', dates: { from: '2026-01-01', to: '2026-02-01' } }
+    const docs = [base, { ...base, email: 'x@example.com' }, { ...base, password: 'abcdefgh' }, { ...base, password: 'ab1@b.com', email: 'ab1@b.com' }, { ...base, tags: ['ok', 'this one is too long'] }, { ...base, tags: ['ok'] }, { ...base, dates: { from: '2026-03-01', to: '2026-02-01' } }, { ...base, password: 'short' }, { email: 'a@b.co' }, {}, 5]
+    let checks = 0
+    for (const d of docs) {
+      const want = zod.signup.safeParse(structuredClone(d)).success
+      assert.equal(page.signup.isValidObject(structuredClone(d)), want, `verdict on ${JSON.stringify(d)}`)
+      assert.equal(page.signup.validate(structuredClone(d)).valid, want, `validate on ${JSON.stringify(d)}`)
+      checks++
+    }
+    assert.equal(checks, docs.length)
+    const e1 = page.signup.validate({ ...base, email: 'x@example.com' }).errors
+    assert.deepEqual(e1.map((e) => [e.instancePath, e.message, e.keyword]), [['/email', 'no example addresses', 'refine']])
+    const e2 = page.signup.validate({ ...base, dates: { from: '2026-03-01', to: '2026-02-01' } }).errors
+    assert.deepEqual(e2.map((e) => [e.instancePath, e.message]), [['/dates/to', 'from after to']])
+    const e3 = page.signup.validate({ ...base, tags: ['ok', 'this one is too long'] }).errors
+    assert.deepEqual(e3.map((e) => [e.instancePath, e.message]), [['/tags/1', 'Invalid input']])
+    const e4 = page.signup.validate({ ...base, password: 'ab1@b.com', email: 'ab1@b.com' }).errors
+    assert.deepEqual(e4.map((e) => [e.instancePath, e.message]), [['', 'password equals email']])
+  })
+
+  it('a refine that closes over an outside name, or stands inside a union, is refused by path', async () => {
+    const file = path.join(dir, 'closed.mjs')
+    await fs.writeFile(file, `import { z } from 'zod'\nconst MAX = 9\nexport const a = z.object({ n: z.string().refine((v) => v.length < MAX) })\nexport const b = z.union([z.string().refine((v) => v !== 'x'), z.number()])\n`)
+    await assert.rejects(() => compileZod('closed.mjs', dir, write, files, load, null), /export a: \$\.n: refine closes over MAX/)
+    const mod = await load(file)
+    assert.deepEqual(unrepresentable(mod.b), ['$|0: refine inside a union or record, which a page cannot place'])
   })
 
   it('a module with no zod export, or a zod type JSON Schema cannot carry, is refused', async () => {
