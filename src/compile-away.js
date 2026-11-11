@@ -494,13 +494,19 @@ const noJson = (methods) => ![...methods].some((m) => JSON_METHODS.has(m))
 // runtime adds, so the choice never makes a bundle bigger, whatever else the
 // bundle holds and in whatever order files are transformed. The bar is the
 // module's gzipped saving as this transform sees it (unminified source), and
-// it was set from minified esbuild bundles of one schema each: the runtime
-// paid for itself from about 22000 bytes of that saving (a 300-property
-// schema lost 1826 bytes at 19430, a 400-property one gained 1937 at 25127).
-// Below it, a schema stays self-contained; `sharedErrors: true` writes every
-// module compact, for an application with many schemas.
+// it is set from minified esbuild bundles of one schema each, 400 to 800
+// properties, with and without formats, for a browser and for Node, on
+// ata-validator 1.63.1 and on its next release: 28 builds each. The runtime
+// paid for itself from a saving between 48387 and 52791 bytes in the worst of
+// them (Node, no formats), and from about 40000 with formats in a browser.
+// The bar is over all of them, so some schemas under it that would have been
+// smaller compact stay self-contained. It was 24000, measured on an earlier
+// ata-validator whose modules were larger: on 1.63.1 a 300-property schema
+// just over that bar went compact and its bundle was 9 to 10 KB larger.
+// Below the bar, a schema stays self-contained; `sharedErrors: true` writes
+// every module compact, for an application with many schemas.
 const ERROR_RUNTIME = 'ata-validator/error-runtime'
-const ERROR_RUNTIME_COST = 24000
+const ERROR_RUNTIME_COST = 52000
 const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors(?:, compileSafe as _ataCompileSafe)? \} from [^\n]*\n/m
 
 // The scan and the transform weigh the same modules, and the module sources

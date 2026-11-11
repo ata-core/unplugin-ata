@@ -287,7 +287,7 @@ describe('compileAway decides conservatively', () => {
 // A schema large enough that its module alone saves more than the shared error
 // runtime costs: the shape of a published configuration schema, every property
 // described.
-function largeSchema(n = 600) {
+function largeSchema(n = 800) {
   const props = {}
   for (let i = 0; i < n; i++) {
     props['field' + i] = {
