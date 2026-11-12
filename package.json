@@ -1,6 +1,6 @@
 {
   "name": "@ata-project/unplugin",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Build-time JSON Schema for Vite, Webpack, Rollup, Rolldown, esbuild, Rspack and Bun: compileAway takes the runtime compiler out of the bundle, and zod, valibot and TypeBox modules are compiled at build time.",
   "type": "module",
   "main": "./src/index.js",
