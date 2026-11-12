@@ -673,6 +673,18 @@ compiler with it: on a page that uses one validator, bundled with esbuild and
 no plugin, 3.9 KB gzipped compiled against 142.8 KB as `new Validator`
 (ata-validator 1.63.1). A server can import the same file.
 
+Where there are many validators, `compile()` writes them as plans for one small
+interpreter instead of as checks written out one by one, when that makes the
+smaller bundle: it weighs all its files together, as the plugin does for an
+application, and chooses plans when they save more than the interpreter costs.
+Seven flat event schemas in one entry, bundled with esbuild and no plugin, come
+to 2.8 KB gzipped as plans (12 KB before compression) against 10.5 KB as
+written checks (139 KB). A plan is slower to run than written checks: on an
+event of 44 optional fields a valid document takes about 1.0 µs against 0.6,
+and a rejected one with its errors read 1.4 µs against 0.1. `table: false`
+keeps written checks, `table: true` takes plans whatever the sizes; the result
+of `compile()` says which was chosen (`table`).
+
 `compiled: false` keeps the `new Validator(schema)` form, for a project whose
 bundler runs the plugin and should make the choices it makes for a whole
 application (shared errors, table plans). The plugin itself, inside a bundler,

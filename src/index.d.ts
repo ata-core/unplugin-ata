@@ -130,7 +130,7 @@ export interface CompileResult {
  * runtime. `false` keeps the `new Validator(schema)` form for a bundler that
  * runs the plugin.
  */
-export function compile(options?: Options & { compiled?: boolean }): Promise<CompileResult>
+export function compile(options?: Options & { compiled?: boolean }): Promise<CompileResult & { table: boolean }>
 
 declare const unplugin: UnpluginInstance<Options | undefined, boolean>
 export default unplugin
