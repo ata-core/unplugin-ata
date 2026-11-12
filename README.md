@@ -12,7 +12,7 @@ It also compiles JSON Schema files into self-contained modules with TypeScript d
 npm install --save-dev @ata-project/unplugin ata-validator
 ```
 
-`ata-validator` is a peer dependency and is only used at build time.
+`ata-validator` is a peer dependency. A page's build uses it at build time only, and the page carries none of it. A generated validator file that a server imports without bundling (`<module>.validators.mjs`, the OpenAPI validators) runs on the runtime there, so that server needs `ata-validator` in its `dependencies`.
 
 ## Setup
 
