@@ -153,6 +153,14 @@ export const unpluginFactory = (userOptions = {}) => {
     },
 
     // The compiled modules of an ahead-of-time build, by their virtual ids.
+    // `loadInclude` keeps the hook to those ids: without it Rspack and
+    // webpack put every module of the build through the load rule, which
+    // types what it loads as JavaScript, so an application's own JSON import
+    // or inline SVG failed to parse.
+    loadInclude(id) {
+      return id.startsWith('ata-compiled:')
+    },
+
     load(id) {
       const src = session.virtual.get(id)
       return src === undefined ? null : { code: src, map: null }

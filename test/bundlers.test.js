@@ -156,6 +156,44 @@ describe('bundlers', () => {
     await check(path.join(dir, 'out.mjs'))
   })
 
+  // A file the plugin has nothing to do with stays the bundler's own: under
+  // Rspack and webpack a load hook without `loadInclude` is a rule over every
+  // module that also types it as JavaScript, so a JSON file an application
+  // imports (a translation table) failed to parse, and so did an inline SVG.
+  for (const name of ['rspack', 'webpack']) {
+    it(`${name} leaves a JSON import and an asset to the bundler`, async () => {
+      await cleanGenerated()
+      const bundler = name === 'rspack' ? (await import('@rspack/core')).rspack : (await import('webpack')).default
+      const dir = await outDir(name + '-json')
+      const src = await outDir(name + '-json-src')
+      await fs.writeFile(path.join(src, 'translation.static.json'), JSON.stringify({ 'error-title': { tr: 'Bulunamadı', en: 'Page not found' } }, null, 4))
+      await fs.writeFile(path.join(src, 'icon.svg'), "<svg xmlns='http://www.w3.org/2000/svg' width='100%'><rect rx='6'/></svg>")
+      await fs.writeFile(path.join(src, 'entry.mjs'), "import t from './translation.static.json'\nimport icon from './icon.svg'\nexport const title = t['error-title'].en\nexport const svg = icon\n")
+      await new Promise((resolve, reject) => {
+        bundler(
+          {
+            mode: 'production',
+            context: src,
+            entry: path.join(src, 'entry.mjs'),
+            experiments: { outputModule: true },
+            output: { path: dir, filename: 'out.mjs', library: { type: 'module' } },
+            optimization: { minimize: false },
+            module: { rules: [{ test: /\.svg$/, type: 'asset/source' }] },
+            plugins: [unplugin[name]({ schemas: 'none/*.schema.json' })],
+          },
+          (err, stats) => {
+            if (err) return reject(err)
+            if (stats.hasErrors()) return reject(new Error(stats.toString({ errors: true, all: false })))
+            resolve()
+          },
+        )
+      })
+      const mod = await import(pathToFileURL(path.join(dir, 'out.mjs')).href)
+      assert.equal(mod.title, 'Page not found')
+      assert.match(mod.svg, /^<svg /)
+    })
+  }
+
   // Bun.build, run by the installed `bun` when there is one. The same plugin
   // is what Bun.build({ compile }) applies when it writes an executable.
   it('bun', { skip: !hasBun() && 'bun is not installed' }, async () => {
