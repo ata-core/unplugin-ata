@@ -660,7 +660,16 @@ export async function compile(options = {}) {
   }
   if (opts.zod || opts.from) {
     const { compileZod, sourceEntries } = await import('./zod.js')
-    for (const r of await compileZod(sourceEntries(opts), root, writeIfChanged, resolveSchemaFiles, importModule, null)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
+    // compile() is called by a script, with no bundler behind it to compile
+    // the validators it writes: they are written compiled. `compiled: false`
+    // keeps the `new Validator(schema)` form for a build that runs the plugin.
+    let precompile = null
+    if (options.compiled !== false && typeof api.compiledModuleFor === 'function') {
+      const { compileAway } = await import('./compile-away.js')
+      precompile = (js, id, kept) => { const out = compileAway(js, id, api, { kept, ir: options.ir === true || (options.ir !== false && api.irDefault === true) }); return out ? out.code : null }
+    }
+    const zodLog = options.logger || { warn: (m) => console.warn(m) }
+    for (const r of await compileZod(sourceEntries(opts), root, writeIfChanged, resolveSchemaFiles, importModule, zodLog, false, precompile)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
   }
   return { files, results }
 }
