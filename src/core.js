@@ -658,6 +658,7 @@ export async function compile(options = {}) {
     const { compileOpenAPI } = await import('./openapi.js')
     for (const r of await compileOpenAPI(opts.openapi, root, writeIfChanged)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, openapi: r })
   }
+  let tableChosen = false
   if (opts.zod || opts.from) {
     const { compileZod, sourceEntries } = await import('./zod.js')
     // compile() is called by a script, with no bundler behind it to compile
@@ -665,13 +666,45 @@ export async function compile(options = {}) {
     // keeps the `new Validator(schema)` form for a build that runs the plugin.
     let precompile = null
     if (options.compiled !== false && typeof api.compiledModuleFor === 'function') {
-      const { compileAway } = await import('./compile-away.js')
-      precompile = (js, id, kept) => { const out = compileAway(js, id, api, { kept, ir: options.ir === true || (options.ir !== false && api.irDefault === true) }); return out ? out.code : null }
+      const { compileAway, tablePays } = await import('./compile-away.js')
+      const ir = options.ir === true || (options.ir !== false && api.irDefault === true)
+      // Many validators in one bundle: written each as its own checks they
+      // add up (seven event schemas came to 19.9 KB gzipped in one entry,
+      // more than the zod they replaced), where one small interpreter and a
+      // plan a schema carries them in a fraction. The choice is made for all
+      // the files together, as the plugin makes it for an application:
+      // plans when they save more than the interpreter costs. `table: true`
+      // or `false` decides it by hand.
+      let table = options.table === true
+      if (ir && options.table !== true && options.table !== false) {
+        const rendered = []
+        await compileZod(sourceEntries(opts), root, async (file, text) => { if (file.endsWith('.validators.mjs')) rendered.push([text, file]); return false }, resolveSchemaFiles, importModule, null)
+        try { table = (await tablePays(rendered, cachedBuild(api))).pays === true } catch { table = false }
+      }
+      const build = cachedBuild(api)
+      precompile = (js, id, kept) => { const out = compileAway(js, id, build, { kept, ir, table }); return out ? out.code : null }
+      tableChosen = table
     }
     const zodLog = options.logger || { warn: (m) => console.warn(m) }
     for (const r of await compileZod(sourceEntries(opts), root, writeIfChanged, resolveSchemaFiles, importModule, zodLog, false, precompile)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
   }
-  return { files, results }
+  return { files, results, table: tableChosen }
+}
+
+// Compiling one schema twice (once to choose between modules and plans, once
+// to write) is the same work: answered from a map the second time.
+function cachedBuild(api) {
+  if (api.__memoBuild) return api.__memoBuild
+  const memo = new Map()
+  const wrap = (name) => typeof api[name] !== 'function' ? api[name] : (schema, o) => {
+    let key
+    try { key = name + '\u0000' + JSON.stringify(schema) + '\u0000' + JSON.stringify(o || {}) } catch { return api[name](schema, o) }
+    if (!memo.has(key)) memo.set(key, api[name](schema, o))
+    return memo.get(key)
+  }
+  const out = { ...api, compiledModuleFor: wrap('compiledModuleFor'), compiledSchemaFor: wrap('compiledSchemaFor') }
+  Object.defineProperty(api, '__memoBuild', { value: out, enumerable: false })
+  return out
 }
 
 // One compilation session: a root, a logger, a lazily loaded ata, and the

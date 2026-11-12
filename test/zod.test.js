@@ -138,6 +138,59 @@ describe('zod', () => {
     console.log(`    one validator on a page built without the plugin, gzipped: ${sizes.compiled} B compiled, ${sizes.runtime} B as new Validator`)
   })
 
+  // Seven flat event schemas in one entry, a team's widget page: written
+  // each as its own checks they came to more than the zod they replaced.
+  // compile() weighs all its files together and writes plans for one shared
+  // interpreter where that is the smaller bundle.
+  it('compile() writes many validators as plans for one interpreter when that is smaller', async () => {
+    const sub = path.join(dir, 'many'); await fs.mkdir(sub, { recursive: true })
+    const names = ['productCard', 'favoriteClick', 'button', 'productAds', 'filter', 'imagePreview', 'popup']
+    const sizes = [60, 48, 43, 40, 28, 16, 10]
+    const WORDS = ['action', 'label', 'widget', 'order', 'banner', 'content', 'merchant', 'listing', 'price', 'source', 'filter', 'screen', 'event', 'display', 'slider', 'review']
+    const field = (i, j) => WORDS[(i * 7 + j * 3) % WORDS.length] + WORDS[(i + j * 5) % WORDS.length].replace(/^./, (c) => c.toUpperCase()) + (j % 4 === 0 ? 'Id' : j % 4 === 1 ? 'Type' : j % 4 === 2 ? 'Key' : '') + j
+    let mod = `import { z } from 'zod'\n`
+    names.forEach((n, i) => {
+      const f = []
+      for (let j = 0; j < sizes[i]; j++) f.push(`${field(i, j)}: z.string().optional()`)
+      f.push('sendWithDelphoi: z.boolean().optional()', `kind: z.enum(['a', 'b']).optional()`, 'position: z.number().int().min(0).optional()')
+      mod += `export const ${n} = z.object({ ${f.join(', ')} })\n`
+    })
+    await fs.writeFile(path.join(sub, 'events.mjs'), mod)
+    const file = path.join(sub, 'events.validators.mjs')
+    const esbuild = await import('esbuild')
+    const entry = path.join(sub, 'page.mjs')
+    await fs.writeFile(entry, `import { ${names.join(', ')} } from './events.validators.mjs'\nexport const all = { ${names.join(', ')} }\n`)
+    const z = await load(path.join(sub, 'events.mjs'))
+    const docs = [{}, { kind: 'a', position: 2, sendWithDelphoi: true }, { kind: 'c' }, { position: -1 }, { position: 1.5, sendWithDelphoi: 'x' }, { [field(0, 0)]: 1 }, { [field(2, 1)]: 'ok', extra: 1 }, null, 'x', []]
+    const out = {}
+    for (const [label, opts] of [['runtime', { compiled: false }], ['modules', { table: false }], ['plans', {}]]) {
+      const r = await compile({ zod: 'events.mjs', schemas: [], root: sub, ...opts })
+      out[label] = { table: r.table, src: await fs.readFile(file, 'utf8'), mod: await load(file) }
+      if (label !== 'runtime') {
+        const b = await esbuild.build({ entryPoints: [entry], bundle: true, minify: true, format: 'esm', platform: 'browser', write: false, logLevel: 'silent' })
+        out[label].raw = b.outputFiles[0].text.length
+        out[label].gz = gzipSync(b.outputFiles[0].text, { level: 9 }).length
+        assert.doesNotMatch(b.outputFiles[0].text, /new Function|ATA9002/, `${label}: the bundle carries no compiler`)
+      }
+    }
+    assert.equal(out.plans.table, true, 'plans are chosen for seven validators')
+    assert.equal(out.modules.table, false)
+    assert.match(out.plans.src, /__ataK_tablePlain\(/)
+    assert.doesNotMatch(out.modules.src, /__ataK_tablePlain\(/)
+    assert.doesNotMatch(out.plans.src, /new Validator\(/)
+    for (const n of names) {
+      for (const d of docs) {
+        const want = z[n].safeParse(d).success
+        for (const label of ['modules', 'plans']) {
+          assert.equal(out[label].mod[n].isValidObject(d), want, `${label} ${n} ${JSON.stringify(d)}`)
+          assert.deepEqual(JSON.parse(JSON.stringify(out[label].mod[n].validate(d))), JSON.parse(JSON.stringify(out.runtime.mod[n].validate(d))), `${label} ${n} ${JSON.stringify(d)}`)
+        }
+      }
+    }
+    assert.ok(out.plans.gz < out.modules.gz, `plans ${out.plans.gz} B gz, modules ${out.modules.gz}`)
+    console.log(`    seven event validators on a page built without the plugin: plans ${out.plans.gz} B gzipped (${out.plans.raw} raw), modules ${out.modules.gz} B (${out.modules.raw} raw)`)
+  })
+
   it('a TypeScript module goes through jiti', async () => {
     const file = path.join(dir, 'events.ts')
     await fs.writeFile(file, `import { z } from 'zod'\nexport const click = z.object({ x: z.number(), y: z.number() })\nexport type Click = z.infer<typeof click>\n`)
