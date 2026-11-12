@@ -124,7 +124,13 @@ export interface CompileResult {
 }
 
 /** Compile once, outside any bundler. */
-export function compile(options?: Options): Promise<CompileResult>
+/**
+ * `compiled` (default true): with `zod` or `from`, write each validators file
+ * already compiled, so that a build without the plugin carries no validator
+ * runtime. `false` keeps the `new Validator(schema)` form for a bundler that
+ * runs the plugin.
+ */
+export function compile(options?: Options & { compiled?: boolean }): Promise<CompileResult>
 
 declare const unplugin: UnpluginInstance<Options | undefined, boolean>
 export default unplugin

@@ -460,7 +460,7 @@ function patternOnly(node) {
 // Write the validators for every module the option names. `resolveFiles`
 // expands the globs; `importModule` loads a module's namespace (jiti for
 // TypeScript). Returns the files written and the exports found.
-export async function compileZod(option, root, write, resolveFiles, importModule, log, fresh = false) {
+export async function compileZod(option, root, write, resolveFiles, importModule, log, fresh = false, precompile = null) {
   let toTypeScript = null
   try { const m = await import('ata-validator'); toTypeScript = (m.default ?? m).toTypeScript } catch {}
   const out = []
@@ -482,8 +482,27 @@ export async function compileZod(option, root, write, resolveFiles, importModule
       // and the nodenext resolution; a .mts source is imported as .mjs.
       const typeImport = ext === '.ts' || ext === '.tsx' ? './' + path.basename(base) + '.js' : ext === '.mts' ? './' + path.basename(base) + '.mjs' : null
       const { js, dts } = render(schemas, opts, toTypeScript, path.basename(abs), typeImport, refines, vendors)
-      const changed = (await write(base + '.validators.mjs', js)) | (await write(base + '.validators.d.mts', dts))
-      out.push({ file: abs, module: base + '.validators.mjs', exports: Object.keys(schemas), changed: !!changed })
+      // `precompile` (the programmatic compile(), which no bundler follows):
+      // the file is written with its validators already compiled, as a
+      // page's build would leave them. Written as `new Validator(schema)`
+      // it is small only where a build with the plugin compiles each call;
+      // imported by a build without it, every validator pulls the runtime
+      // compiler into the bundle (487 KB parsed in one fragment that did).
+      // A file the build cannot compile whole is written as before, and
+      // said so.
+      let text = js
+      if (precompile !== null) {
+        const kept = []
+        const done = precompile(js, base + '.validators.mjs', kept)
+        if (done && kept.length === 0) {
+          const head = js.slice(0, js.indexOf('\n') + 1)
+          const body = done.replace(head, '').replace(/^\/\/ One validator per exported [^\n]*\n/m, '')
+          text = head + '// Compiled at build time: each export is its schema written out as checks. No validator runtime is imported.\n' + body
+        }
+        else if (log && log.warn) log.warn(`[unplugin-ata] ${path.basename(base)}.validators.mjs keeps ${kept.length || 'its'} validator(s) on the runtime: ${kept.map((k) => k.reason).join('; ') || 'nothing was replaced'}`)
+      }
+      const changed = (await write(base + '.validators.mjs', text)) | (await write(base + '.validators.d.mts', dts))
+      out.push({ file: abs, module: base + '.validators.mjs', exports: Object.keys(schemas), changed: !!changed, compiled: text !== js })
     }
   }
   return out

@@ -663,6 +663,22 @@ import { compile } from '@ata-project/unplugin'
 const { files, results } = await compile({ schemas: 'schemas/**/*.json', root: process.cwd() })
 ```
 
+With the `zod` or `from` option, `compile()` writes each `<module>.validators.mjs`
+already compiled: every export is its schema written out as checks, and the
+file imports only the small helpers those checks use, never the validator
+runtime. A script has no bundler behind it to compile the file later, and a
+file left as `new Validator(schema)` is small only in a build that runs this
+plugin. Imported by a build that does not, each validator brings the runtime
+compiler with it: on a page that uses one validator, bundled with esbuild and
+no plugin, 3.9 KB gzipped compiled against 142.8 KB as `new Validator`
+(ata-validator 1.63.1). A server can import the same file.
+
+`compiled: false` keeps the `new Validator(schema)` form, for a project whose
+bundler runs the plugin and should make the choices it makes for a whole
+application (shared errors, table plans). The plugin itself, inside a bundler,
+writes that form and compiles it in the same build. A file the build cannot
+compile whole is written in that form too, with a warning that says why.
+
 ## Tests
 
 `npm test` compiles the same entry with Vite, Webpack, Rollup, Rolldown,
