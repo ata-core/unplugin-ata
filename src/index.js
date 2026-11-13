@@ -144,7 +144,7 @@ export const unpluginFactory = (userOptions = {}) => {
         if (api.compiledModuleFor && api.compiledSharedErrors) {
           const sources = scanOnce(session)
           const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
-          const savings = await sharedSavings(sources, cachedApi(session, api))
+          const savings = await sharedSavings(sources, cachedApi(session, api), userOptions.errorFields)
           const kept = await perLoad(session.loads, new Set(resolved([...savings.keys()])), async (files) => sharedPays(savings, files.map((f) => byId.get(f))).pays)
           // A file where the runtime does not pay skips the compact attempt.
           // A file the scan did not see (outside the root) decides alone, by
@@ -166,7 +166,7 @@ export const unpluginFactory = (userOptions = {}) => {
         if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
           const sources = scanOnce(session)
           const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
-          const forms = tableForms(sources, cachedApi(session, api))
+          const forms = tableForms(sources, cachedApi(session, api), userOptions.errorFields)
           const kept = await perLoad(session.loads, new Set(resolved([...forms.keys()])), async (files) => (await tableFormsPay(forms, files.map((f) => byId.get(f)))).pays)
           session.tableFiles = kept
           session.tableDecision = kept.size > 0
@@ -215,7 +215,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },

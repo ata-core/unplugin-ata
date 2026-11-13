@@ -63,6 +63,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
+import { readsOnlyPlainFields } from './error-use.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
@@ -380,6 +381,8 @@ function replaceableBinding(newExpr, ctx) {
   const name = decl.id.name
   if (ctx.declared.get(name) !== 1) return null
   const methods = new Set()
+  // Each validate() call, for src/error-use.js to follow its result.
+  const validateCalls = []
   let handed = false
   // Handed only to Standard Schema consumers the build knows (ctx.standardConsumers).
   let handedStandard = false
@@ -389,7 +392,7 @@ function replaceableBinding(newExpr, ctx) {
     const p = r.parent
     const member = p && (p.type === 'MemberExpression' || p.type === 'OptionalMemberExpression') && r.key === 'object' && !p.computed && p.property.type === 'Identifier' && METHODS.has(p.property.name)
     const called = member && p.__parent && (p.__parent.type === 'CallExpression' || p.__parent.type === 'OptionalCallExpression') && p.__parent.callee === p
-    if (called) { methods.add(p.property.name); continue }
+    if (called) { methods.add(p.property.name); if (p.property.name === 'validate') validateCalls.push(p.__parent); continue }
     if (ctx.compiledStandard) {
       const call = handedTo(r)
       if (call !== null) {
@@ -410,7 +413,7 @@ function replaceableBinding(newExpr, ctx) {
   // such a consumer counts like any other.
   const standardOnly = handedStandard && !handed && methods.size === 0 && ctx.standardWrapper === true
   if (handed || (handedStandard && !standardOnly)) { handed = true; methods.add('validate') }
-  return { name, methods, handed, standardOnly }
+  return { name, methods, handed, standardOnly, validateCalls }
 }
 
 // Whether a callee belongs to a package that takes a Standard Schema and reads
@@ -557,11 +560,11 @@ function gzipSizeAsync(src) {
 // What each scanned file saves by taking its errors from the shared runtime:
 // a Map of file -> { saving, calls }, the files with no replaceable call left
 // out.
-export async function sharedSavings(sources, ata) {
+export async function sharedSavings(sources, ata, errorFields) {
   const out = new Map()
   for (const [code, id] of sources) {
     const collect = []
-    try { compileAway(code, id, ata, { sharedErrors: 'auto', collect }) } catch {}
+    try { compileAway(code, id, ata, { sharedErrors: 'auto', collect, errorFields }) } catch {}
     if (!collect.length) continue
     const savings = await Promise.all(collect.map(async ([full, compact]) => (await gzipSizeAsync(full)) - (await gzipSizeAsync(compact))))
     let saving = 0
@@ -595,12 +598,12 @@ export async function sharedErrorsPay(sources, ata) {
 export const TABLE_RUNTIME_COST = 1900
 // Each scanned file the table changes, rewritten both ways: a Map of file ->
 // { modules, plans, calls }.
-export function tableForms(sources, ata) {
+export function tableForms(sources, ata, errorFields) {
   const out = new Map()
   for (const [code, id] of sources) {
     let m = null; let t = null
-    try { m = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: false }) } catch {}
-    try { t = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: true }) } catch {}
+    try { m = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: false, errorFields }) } catch {}
+    try { t = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: true, errorFields }) } catch {}
     if (!m || !t || m.code === t.code) continue
     out.set(id, { modules: m.code, plans: t.code, calls: (t.code.match(/__ataK_table(?:Plain|Rich)\(/g) || []).length })
   }
@@ -761,7 +764,16 @@ function compiledOptionsArg(node, ctx, supported, plainOk, out) {
   return parts.length ? `{${parts.join(',')}}` : ''
 }
 
+// Whether the options literal says `richErrors` itself: then it is the
+// author's choice, not the build's.
+function namesRichErrors(node, ctx) {
+  if (!node) return false
+  const opts = staticValue(node, ctx)
+  return opts === NOT_STATIC || opts === null || typeof opts !== 'object' || Object.prototype.hasOwnProperty.call(opts, 'richErrors')
+}
+
 export function compileAway(code, id, ata, options) {
+  const errorFields = options && options.errorFields === 'all' ? 'all' : 'auto'
   const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
   const collect = options && Array.isArray(options.collect) ? options.collect : null
   // `table`: write IR validators as plans for ata-validator/kernels' table
@@ -1067,6 +1079,17 @@ export function compileAway(code, id, ata, options) {
     // and the plain wrapper hands them out, with no error pipeline in the
     // bundle. The plain wrapper has no JSON entry points; code that calls
     // them keeps the runtime.
+    // `errorFields: 'auto'`: no option asked for rich or plain errors, and
+    // the code reads each error only through the fields a plain error has
+    // (src/error-use.js). The validator is then written as if it had been
+    // given `richErrors: false`: the same answers in those fields, without
+    // the rich pipeline. validateJSON() has no plain wrapper, and a
+    // validator handed over is read by code the build does not see.
+    if (!shape.plain && errorFields !== 'all' && ata.compiledPlain === true && !verdict && !standardOnly && !binding.handed &&
+        binding.validateCalls.length > 0 && noJson(binding.methods) && !namesRichErrors(expr.arguments[1], ctx) && readsOnlyPlainFields(binding.validateCalls, scan)) {
+      shape.plain = true
+      optionsArg = optionsArg === '' ? '{"richErrors":false}' : '{"richErrors":false,' + optionsArg.slice(1)
+    }
     const plain = shape.plain && !verdict && !standardOnly
     if (plain && !noJson(binding.methods)) { keep(expr, 'richErrors: false with validateJSON() or isValidJSON(), which the plain compiled wrapper does not have'); continue }
     // The `ir` option: a validator only called, never handed over, with no
