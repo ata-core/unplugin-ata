@@ -29,6 +29,8 @@ const isMember = (n) => n && (n.type === 'MemberExpression' || n.type === 'Optio
 const isCall = (n) => n && (n.type === 'CallExpression' || n.type === 'OptionalCallExpression')
 const isFunction = (n) => n && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' || n.type === 'ObjectMethod' || n.type === 'ClassMethod' || n.type === 'ClassPrivateMethod')
 const named = (m) => !m.computed && m.property.type === 'Identifier' ? m.property.name : null
+// A member that is assigned to, updated or deleted rather than read.
+const written = (m) => { const p = m.__parent; return !!p && ((p.type === 'AssignmentExpression' && p.left === m) || p.type === 'UpdateExpression' || (p.type === 'UnaryExpression' && p.operator === 'delete')) }
 
 // `scan` is compile-away's walk (declarations counted, value references
 // listed), asked here of one function at a time so that `r` and `e` may be
@@ -63,7 +65,7 @@ export function readsOnlyPlainFields(calls, scan) {
   const error = (node0) => {
     const [node, p] = through(node0)
     if (!p) return false
-    if (isMember(p) && p.object === node) { const k = named(p); return k !== null && PLAIN_FIELDS.has(k) }
+    if (isMember(p) && p.object === node) { const k = named(p); return k !== null && PLAIN_FIELDS.has(k) && !written(p) }
     if (p.type === 'VariableDeclarator' && p.init === node && constOf(p)) {
       if (p.id.type === 'Identifier') return all(p.id.name, p, error)
       if (p.id.type === 'ObjectPattern') return errorPattern(p.id)
@@ -87,6 +89,7 @@ export function readsOnlyPlainFields(calls, scan) {
     const [node, p] = through(node0)
     if (!p) return false
     if (isMember(p) && p.object === node) {
+      if (written(p)) return false
       if (p.computed) return error(p)
       const k = named(p)
       if (k === 'length') return true
@@ -114,7 +117,7 @@ export function readsOnlyPlainFields(calls, scan) {
     if (p.type === 'ExpressionStatement') return true
     if (isMember(p) && p.object === node) {
       const k = named(p)
-      if (k === null) return false
+      if (k === null || written(p)) return false
       if (RESULT_FIELDS.has(k)) return true
       return k === 'errors' && errors(p)
     }

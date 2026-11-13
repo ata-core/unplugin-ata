@@ -66,6 +66,10 @@ const RICH = {
   'an error by index handed over': `export const run = (d) => { const r = v.validate(d); return r.valid ? null : Object.keys(give(r.errors[0])).length }`,
   'the result reassigned': `export const run = (d) => { let r = v.validate(d); const q = r; return Object.keys(q.errors[0] || {}).length }`,
   'a method the build does not know': `export const run = (d) => v.validate(d).errors.reduce((a, e) => a + Object.keys(e).length, 0)`,
+  'an error field written': `export const run = (d) => v.validate(d).errors.map((e) => { e.message = 'x'; return e.keyword })`,
+  'an error field deleted': `export const run = (d) => v.validate(d).errors.map((e) => { delete e.params; return e.keyword })`,
+  'the list emptied': `export const run = (d) => { const r = v.validate(d); if (r.valid) return 0; const n = r.errors.length; try { r.errors.length = 0 } catch {} return n }`,
+  'the list replaced': `export const run = (d) => { const r = v.validate(d); try { r.errors = [] } catch {} return r.valid }`,
   'an unknown field of the result': `export const run = (d) => { const r = v.validate(d); return typeof r.toOutput }`,
 }
 
