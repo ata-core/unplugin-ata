@@ -237,7 +237,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `report` | `true` | At the end of the build, log how many validators were compiled away and every `new Validator(...)` kept on the runtime, with file, line and reason. See [the report](#the-report-what-stayed-on-the-runtime-and-why). |
 | `standardConsumers` | `[]` | Packages, besides the ones the build knows, whose imported functions take a validator and read only its `~standard`; a validator handed only to those takes the Standard-only wrapper. See below. |
 | `ir` | `true` | Compile validators that are only called with `ata-validator/ir`, a smaller module with the same results; `false` keeps the larger one. See below. |
-| `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what every replaceable call would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
+| `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what the replaceable calls a page loads together would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
 ## compileAway: keep `new Validator`, drop the compiler
 
@@ -620,15 +620,36 @@ nothing.
 
 A written module is fast and costs about 400 bytes gzipped a form. With
 `table: 'auto'` (the default) the build also writes each validator as a plan
-for one interpreter shared across the bundle, compares the two for the whole
-application, and takes the plans when that comparison says the bundle comes
-out smaller; a schema the plans do not cover keeps its module. The threshold
-was set on Vite + React builds of 1 to 10 forms, plain and rich, with and
-without format checks, where it never took the plans for the larger bundle.
-The comparison covers every source under the root: a repository that holds
-several applications under one root should give each its own `root`, or
-set `table` itself. The verdicts, errors and defaults
-are the same either way, and the build log says which it chose.
+for one interpreter, compares the two for the files a page loads together,
+and takes the plans where that comparison says the page comes out smaller; a
+schema the plans do not cover keeps its module. The threshold was set on
+Vite + React builds of 1 to 10 forms, plain and rich, with and without format
+checks, where it never took the plans for the larger bundle. The verdicts,
+errors and defaults are the same either way, and the build log says how many
+files took plans.
+
+What loads together is read from the project's own imports: each entry of
+the build and each target of a dynamic `import()` starts a load, and the
+files it imports statically belong to it. A file takes plans only if every
+load that holds it is smaller for them. Up to 0.16.0 the comparison was made
+once over every source under the root, which put the interpreter on each
+page of a site with one form a page. Measured on such sites, first load
+gzipped a page: four pages built with esbuild and code splitting, 4.4 KB
+before and 2.7 to 3.9 KB now; a page that only asks `isValidObject()`,
+bundled alone, 4.1 KB before and 0.65 now; six forms with an email field
+behind three entries and three dynamic imports in Vite, 4.9 to 5.1 KB before
+and 3.9 to 4.8 now. An application that loads its forms together takes plans
+as before.
+
+Imports are resolved through relative paths, Vite's `resolve.alias`, the
+`paths` of the root's `tsconfig.json` or `jsconfig.json`, and the `@/`, `~/`
+and `$lib` conventions. An import the build cannot follow leaves its target
+in a load of its own, which keeps modules there. The entries are read from
+Vite, Rollup, Rolldown, esbuild, webpack and Rspack; where an entry is not a
+file of the project, as under Next.js, every file nothing imports counts as
+one, a story or a script beside the application included, and `table: true`
+takes plans regardless. `sharedErrors: 'auto'` is decided over the same
+loads.
 
 In a Vite + React application with ten six-field forms reading plain errors,
 the validators add 2.02 KB gzipped to the first load, against 5.35 KB as
