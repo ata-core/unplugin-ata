@@ -11,17 +11,22 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { createSession, normalizeAlias, compile, __internal } from './core.js'
-import { compileAway, sharedErrorsPay, tablePays, clearSizes } from './compile-away.js'
+import { compileAway, sharedSavings, sharedPays, tableForms, tableFormsPay, clearSizes } from './compile-away.js'
+import { importsOf, resolverFor, aliasesFor, firstLoads, perLoad, htmlScripts } from './first-load.js'
 
 const SOURCE = /\.[cm]?[jt]sx?$/
 
 // Source files the application may import, for the sharedErrors scan: what
 // the transform would see, without node_modules, build output, tests and
-// dot-directories. Only files that mention ata-validator are kept.
+// dot-directories. Only files that mention ata-validator are kept as
+// sources; every file's imports are kept, component files included, for the
+// loads of src/first-load.js.
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.next', '.nuxt', '.output', '.svelte-kit', '.turbo', '.cache'])
 const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/
+const COMPONENT = /\.(?:vue|svelte|astro)$/
 function scanSources(root) {
   const out = []
+  const imports = new Map()
   const walk = (dir, depth) => {
     if (depth > 12) return
     let entries
@@ -30,14 +35,66 @@ function scanSources(root) {
       if (e.name.startsWith('.') || SKIP_DIRS.has(e.name)) continue
       const p = path.join(dir, e.name)
       if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'test' && e.name !== 'tests') walk(p, depth + 1); continue }
-      if (!e.isFile() || !SOURCE.test(e.name) || TEST_FILE.test(e.name)) continue
+      const source = SOURCE.test(e.name)
+      if (!e.isFile() || !(source || COMPONENT.test(e.name)) || TEST_FILE.test(e.name)) continue
       let code
       try { if (fs.statSync(p).size > 1 << 20) continue; code = fs.readFileSync(p, 'utf8') } catch { continue }
-      if (code.includes('ata-validator')) out.push([code, p])
+      imports.set(path.resolve(p), importsOf(code))
+      if (source && code.includes('ata-validator')) out.push([code, p])
     }
   }
   walk(root, 0)
+  out.imports = imports
   return out
+}
+
+// The scan of a build, made once: the sources, their paths, and what each
+// page loads together.
+function scanOnce(session) {
+  if (session.scannedSources) return session.scannedSources
+  const root = session.root || process.cwd()
+  const sources = scanSources(root)
+  session.scanned = new Set(sources.map(([, id]) => path.resolve(id)))
+  session.scannedSources = sources
+  const resolve = resolverFor(new Set(sources.imports.keys()), root, aliasesFor(root, session.options && session.options.alias))
+  session.loads = firstLoads(sources.imports, resolve, entryFiles(session.entries, session.entryBase || root, root, resolve))
+  return sources
+}
+
+// The bundler's entries as scanned files, or null where one of them is not
+// a file of the project (a framework's own entry, a package, a virtual
+// module): then the loads are read from the imports alone. An HTML entry
+// stands for the module scripts it names.
+function entryFiles(entries, base, root, resolve) {
+  if (!Array.isArray(entries) || entries.length === 0) return null
+  const out = []
+  for (const e of entries) {
+    if (typeof e !== 'string') return null
+    const abs = path.resolve(base, e.split('?')[0])
+    if (/\.html?$/.test(abs)) {
+      let html
+      try { html = fs.readFileSync(abs, 'utf8') } catch { return null }
+      for (const src of htmlScripts(html)) {
+        if (/^(?:[a-z]+:)?\/\//i.test(src)) continue
+        const hit = resolve(src.startsWith('/') || src.startsWith('.') ? src : './' + src, abs)
+        if (!hit) return null
+        out.push(hit)
+      }
+      continue
+    }
+    const hit = resolve('./' + path.basename(abs), abs)
+    if (!hit) return null
+    out.push(hit)
+  }
+  return out.length ? out : null
+}
+
+// A bundler's `input` or `entry` in its string, list or record form.
+function entryList(input) {
+  if (typeof input === 'string') return [input]
+  if (Array.isArray(input)) return input.flatMap((x) => typeof x === 'string' ? [x] : x && typeof x === 'object' ? entryList(x.in !== undefined ? x.in : x.import) || [null] : [null])
+  if (input && typeof input === 'object') return Object.values(input).flatMap((x) => entryList(x && typeof x === 'object' && !Array.isArray(x) ? (x.import !== undefined ? x.import : x.in) : x) || [null])
+  return null
 }
 
 // The scan and the transform compile the same schemas: one compile each.
@@ -69,42 +126,53 @@ export const unpluginFactory = (userOptions = {}) => {
       const { files, results } = await session.compileAll()
       const changed = results.filter((r) => r.changed).length
       session.logger?.info?.(`[unplugin-ata] compiled ${files.length} schema(s), ${changed} file(s) written`)
-      // sharedErrors 'auto' decides for the whole application, not file by
-      // file: the sources are scanned once here, and the runtime is used when
-      // every replaceable call together saves more than it costs.
+      // sharedErrors 'auto' decides for what loads together, not file by file
+      // and not for the project: the sources are scanned once here, and a
+      // file takes the runtime where every page that loads it saves more by
+      // the runtime than the runtime costs (src/first-load.js).
       session.sharedDecision = undefined
+      session.sharedFiles = null
+      session.tableFiles = null
       clearSizes()
       session.typeSchemas.reset()
       session.scanned = null
       session.scannedSources = null
+      session.loads = null
+      const resolved = (ids) => ids.map((id) => path.resolve(id))
       if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
         const api = await session.api()
         if (api.compiledModuleFor && api.compiledSharedErrors) {
-          const sources = scanSources(session.root || process.cwd())
-          session.scanned = new Set(sources.map(([, id]) => path.resolve(id)))
-          session.scannedSources = sources
-          const { pays, saving, calls } = await sharedErrorsPay(sources, cachedApi(session, api))
-          // When the whole application does not pay for the runtime, no single
-          // call does either: the transform skips the compact attempt. A file
-          // the scan did not see (outside the root) decides alone, by the
-          // per-module rule, which never makes a bundle bigger either.
-          session.sharedDecision = pays ? 'smaller' : false
-          if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) can share one error runtime, saving ${saving} bytes gzipped against its cost: ${pays ? 'shared' : 'kept self-contained'}`)
+          const sources = scanOnce(session)
+          const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
+          const savings = await sharedSavings(sources, cachedApi(session, api))
+          const kept = await perLoad(session.loads, new Set(resolved([...savings.keys()])), async (files) => sharedPays(savings, files.map((f) => byId.get(f))).pays)
+          // A file where the runtime does not pay skips the compact attempt.
+          // A file the scan did not see (outside the root) decides alone, by
+          // the per-module rule, which never makes a bundle bigger either.
+          session.sharedFiles = kept
+          session.sharedDecision = kept.size > 0 ? 'smaller' : false
+          const all = sharedPays(savings)
+          if (all.calls > 0) session.logger?.info?.(`[unplugin-ata] ${all.calls} validator(s) can share one error runtime: ${kept.size ? `shared in ${kept.size} of ${savings.size} file(s), where what loads together saves more than its cost` : 'kept self-contained'}`)
         }
       }
-      // `table` 'auto' decides for the whole application too: the IR's
-      // validators go out as plans for one shared interpreter when that makes
-      // the bundle smaller (src/compile-away.js tablePays), compiled code
-      // otherwise. A file the scan did not see keeps compiled code.
+      // `table` 'auto' decides the same way: the IR's validators go out as
+      // plans for one shared interpreter where that makes what a page loads
+      // smaller (src/compile-away.js tableFormsPay), compiled code otherwise.
+      // A file the scan did not see keeps compiled code.
       session.tableDecision = false
       const apiForTable = userOptions.compileAway !== false && userOptions.ir !== false ? await session.api() : null
       if (apiForTable !== null && (userOptions.ir === true || apiForTable.irDefault) && (userOptions.table === undefined || userOptions.table === 'auto')) {
         const api = apiForTable
         if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
-          if (!session.scanned) { const sources = scanSources(session.root || process.cwd()); session.scanned = new Set(sources.map(([, id]) => path.resolve(id))); session.scannedSources = sources } else if (!session.scannedSources) session.scannedSources = scanSources(session.root || process.cwd())
-          const { pays, saving, calls } = await tablePays(session.scannedSources, cachedApi(session, api))
-          session.tableDecision = pays
-          if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) as table plans would save ${saving} bytes gzipped against the interpreter's cost: ${pays ? 'plans' : 'compiled code'}`)
+          const sources = scanOnce(session)
+          const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
+          const forms = tableForms(sources, cachedApi(session, api))
+          const kept = await perLoad(session.loads, new Set(resolved([...forms.keys()])), async (files) => (await tableFormsPay(forms, files.map((f) => byId.get(f)))).pays)
+          session.tableFiles = kept
+          session.tableDecision = kept.size > 0
+          let calls = 0
+          for (const f of forms.values()) calls += f.calls
+          if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) could be table plans: ${kept.size ? `plans in ${kept.size} of ${forms.size} file(s), where what loads together outweighs the interpreter` : 'compiled code'}`)
         }
       }
     },
@@ -146,8 +214,8 @@ export const unpluginFactory = (userOptions = {}) => {
       // Under the ahead-of-time compile the compiled modules are virtual .js
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
-      const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableDecision === true && session.scanned && session.scanned.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? session.sharedDecision : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
+      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },
@@ -211,11 +279,15 @@ export const unpluginFactory = (userOptions = {}) => {
     // working directory. `root` given explicitly wins everywhere.
     webpack(compiler) {
       if (!userOptions.root && compiler.context) session.root = compiler.context
+      session.entries = entryList(compiler.options && compiler.options.entry)
+      session.entryBase = compiler.context
       session.logger = compiler.getInfrastructureLogger?.('unplugin-ata') ?? null
     },
 
     rspack(compiler) {
       if (!userOptions.root && compiler.context) session.root = compiler.context
+      session.entries = entryList(compiler.options && compiler.options.entry)
+      session.entryBase = compiler.context
       session.logger = compiler.getInfrastructureLogger?.('unplugin-ata') ?? null
     },
 
@@ -223,6 +295,8 @@ export const unpluginFactory = (userOptions = {}) => {
       setup(build) {
         const cwd = build.initialOptions && build.initialOptions.absWorkingDir
         if (!userOptions.root && cwd) session.root = cwd
+        session.entries = entryList(build.initialOptions && build.initialOptions.entryPoints)
+        session.entryBase = cwd || process.cwd()
       },
     },
 
@@ -282,9 +356,20 @@ export const unpluginFactory = (userOptions = {}) => {
       return null
     },
 
+    // The entries of the build, for the loads of src/first-load.js. Each
+    // bundler hands them over in its own hook; where none does, or an entry
+    // is a function, the loads are read from the imports alone.
+    rollup: { options(o) { session.entries = entryList(o && o.input) } },
+    rolldown: { options(o) { session.entries = entryList(o && o.input) } },
+
     vite: {
       configResolved(config) {
         if (!userOptions.root) session.root = config.root || session.root
+        const b = config.build || {}
+        const lib = b.lib && b.lib.entry
+        const input = (b.rollupOptions && b.rollupOptions.input) || (b.rolldownOptions && b.rolldownOptions.input) || lib
+        session.entries = input ? entryList(input) : ['index.html']
+        session.entryBase = config.root || session.root
         session.logger = config.logger
         // Carry Vite's resolve.alias into the .ts loader so aliased imports in
         // schema files resolve. tsconfig `paths` are handled by jiti directly.

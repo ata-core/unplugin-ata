@@ -554,41 +554,69 @@ function gzipSizeAsync(src) {
   }))
 }
 
-export async function sharedErrorsPay(sources, ata) {
-  const collect = []
+// What each scanned file saves by taking its errors from the shared runtime:
+// a Map of file -> { saving, calls }, the files with no replaceable call left
+// out.
+export async function sharedSavings(sources, ata) {
+  const out = new Map()
   for (const [code, id] of sources) {
+    const collect = []
     try { compileAway(code, id, ata, { sharedErrors: 'auto', collect }) } catch {}
+    if (!collect.length) continue
+    const savings = await Promise.all(collect.map(async ([full, compact]) => (await gzipSizeAsync(full)) - (await gzipSizeAsync(compact))))
+    let saving = 0
+    for (const x of savings) if (x > 0) saving += x
+    out.set(id, { saving, calls: collect.length })
   }
-  const savings = await Promise.all(collect.map(async ([full, compact]) => (await gzipSizeAsync(full)) - (await gzipSizeAsync(compact))))
-  let saving = 0
-  for (const x of savings) if (x > 0) saving += x
-  return { saving, pays: saving > ERROR_RUNTIME_COST, calls: collect.length }
+  return out
+}
+// Whether files that load together pay for the runtime: `files` names the
+// ones to count, all of them when left out.
+export function sharedPays(savings, files) {
+  let saving = 0; let calls = 0
+  for (const id of files || savings.keys()) { const r = savings.get(id); if (r) { saving += r.saving; calls += r.calls } }
+  return { saving, pays: saving > ERROR_RUNTIME_COST, calls }
+}
+export async function sharedErrorsPay(sources, ata) {
+  return sharedPays(await sharedSavings(sources, ata))
 }
 
 // Whether the application's IR validators are smaller as table plans: every
 // scanned file rewritten both ways, as the transform would rewrite it, and
 // the two outputs compared gzipped, all files together, against
 // TABLE_RUNTIME_COST, what the table interpreter costs a bundle over the
-// helpers written modules use. Set from Vite + React builds of 1 to 10 form
+// helpers written modules use. The plugin asks this of the files one page
+// loads together (src/first-load.js), not of the project. Set from Vite + React builds of 1 to 10 form
 // validators, plain and rich, with and without format checks, 24 in all: the
 // saving computed here was at most 1694 bytes wherever plans made the larger
 // first load (every single-form build) and at least 2182 wherever they made
 // the smaller one (two forms on), so a choice of plans is never the larger
 // bundle on those.
 export const TABLE_RUNTIME_COST = 1900
-export async function tablePays(sources, ata, cost = TABLE_RUNTIME_COST) {
-  const modules = []; const plans = []; let calls = 0
+// Each scanned file the table changes, rewritten both ways: a Map of file ->
+// { modules, plans, calls }.
+export function tableForms(sources, ata) {
+  const out = new Map()
   for (const [code, id] of sources) {
     let m = null; let t = null
     try { m = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: false }) } catch {}
     try { t = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: true }) } catch {}
     if (!m || !t || m.code === t.code) continue
-    calls += (t.code.match(/__ataK_table(?:Plain|Rich)\(/g) || []).length
-    modules.push(m.code); plans.push(t.code)
+    out.set(id, { modules: m.code, plans: t.code, calls: (t.code.match(/__ataK_table(?:Plain|Rich)\(/g) || []).length })
   }
+  return out
+}
+// Whether files that load together are smaller as plans: `files` names the
+// ones to count, all of them when left out.
+export async function tableFormsPay(forms, files, cost = TABLE_RUNTIME_COST) {
+  const modules = []; const plans = []; let calls = 0
+  for (const id of files || forms.keys()) { const f = forms.get(id); if (f) { modules.push(f.modules); plans.push(f.plans); calls += f.calls } }
   if (calls === 0) return { pays: false, saving: 0, calls: 0 }
   const saving = (await gzipSizeAsync(modules.join('\n'))) - (await gzipSizeAsync(plans.join('\n')))
   return { pays: saving > cost, saving, calls }
+}
+export async function tablePays(sources, ata, cost = TABLE_RUNTIME_COST) {
+  return tableFormsPay(tableForms(sources, ata), null, cost)
 }
 
 // The module's version stamp and, when its schema has a default, its own
