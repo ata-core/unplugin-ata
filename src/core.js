@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
 import * as fsSync from 'node:fs'
 import { createRequire } from 'node:module'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 // Whether every file @hookform/resolvers' export map gives for ./ata-validator
 // has `name`. `entry` is the file `require` resolved to; the package root is
@@ -534,11 +535,17 @@ async function importModule(file, fresh = false, alias) {
   return jiti.import(file)
 }
 
+// compile({ check: true }) runs under this store: a file that would be
+// written is listed and left as it is.
+const dryRun = new AsyncLocalStorage()
+
 async function writeIfChanged(file, contents) {
   try {
     const existing = await fs.readFile(file, 'utf8')
     if (existing === contents) return false
   } catch { /* file missing, write fresh */ }
+  const dry = dryRun.getStore()
+  if (dry) { dry.push(file); return true }
   await fs.mkdir(path.dirname(file), { recursive: true })
   await fs.writeFile(file, contents)
   return true
@@ -647,6 +654,14 @@ async function writeBunTargetBeside (schema, modulePath, typeName, format, api, 
 
 // Programmatic entry for custom build scripts.
 export async function compile(options = {}) {
+  // `check: true`: nothing is written. The files a compile would write or
+  // change come back in `stale`, for a CI step that fails when the generated
+  // files were not regenerated after a schema changed.
+  if (options.check === true) {
+    const stale = []
+    const out = await dryRun.run(stale, () => compile({ ...options, check: false }))
+    return { ...out, stale: [...new Set(stale)].sort() }
+  }
   const opts = { ...DEFAULT_OPTIONS, ...options }
   const root = options.root ?? process.cwd()
   const api = await loadAta()
@@ -686,9 +701,14 @@ export async function compile(options = {}) {
       tableChosen = table
     }
     const zodLog = options.logger || { warn: (m) => console.warn(m) }
-    for (const r of await compileZod(sourceEntries(opts), root, writeIfChanged, resolveSchemaFiles, importModule, zodLog, false, precompile)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
+    // Each file is held against the library its schemas are written in
+    // before it is written (src/zod.js agreement). On unless `verify: false`.
+    let verify = null
+    if (options.verify !== false && api.verify && typeof api.verify.generate === 'function') verify = { generate: api.verify.generate, count: typeof options.verify === 'number' ? options.verify : 50 }
+    else if (options.verify === true || typeof options.verify === 'number') throw new Error('[unplugin-ata] verify needs ata-validator 1.61.0 or later')
+    for (const r of await compileZod(sourceEntries(opts), root, writeIfChanged, resolveSchemaFiles, importModule, zodLog, false, precompile, verify)) results.push({ changed: r.changed, typeName: null, paths: { mjs: r.module }, zod: r })
   }
-  return { files, results, table: tableChosen }
+  return { files, results, table: tableChosen, stale: [] }
 }
 
 // Compiling one schema twice (once to choose between modules and plans, once

@@ -129,8 +129,17 @@ export interface CompileResult {
  * already compiled, so that a build without the plugin carries no validator
  * runtime. `false` keeps the `new Validator(schema)` form for a bundler that
  * runs the plugin.
+ *
+ * `verify` (default true, with `zod` or `from`): before a validators file is
+ * written, each export is held against the library its schema is written in,
+ * on documents made from the schema (50 an export, or the number given), and
+ * a difference in verdict throws and leaves the file unwritten. `false` skips
+ * the check. Needs ata-validator 1.61.0.
+ *
+ * `check: true`: write nothing, and return in `stale` the files a compile
+ * would write or change.
  */
-export function compile(options?: Options & { compiled?: boolean }): Promise<CompileResult & { table: boolean }>
+export function compile(options?: Omit<Options, 'verify'> & { compiled?: boolean; verify?: boolean | number; check?: boolean }): Promise<CompileResult & { table: boolean; stale: string[] }>
 
 declare const unplugin: UnpluginInstance<Options | undefined, boolean>
 export default unplugin

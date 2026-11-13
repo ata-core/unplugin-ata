@@ -159,7 +159,32 @@ export function unrepresentable(schema, at = '$', out = [], seen = new Set(), re
     for (const c of def.checks || []) refineCheck(c, at, out, refines, tokens, placed, '')
     return out
   }
-  for (const c of def.checks || []) refineCheck(c, at, out, refines, tokens, placed, TYPE_GUARD[def.type] || '')
+  // zod converts the value before it checks it (`z.coerce.number()` takes
+  // "5"), and a `.catch()` takes anything and puts its own value there. The
+  // JSON Schema says the type alone, so the page would refuse what zod takes.
+  if (def.coerce === true) out.push(`${at}: coerce, which converts the value before checking it`)
+  if (def.type === 'catch') out.push(`${at}: catch, which takes any value`)
+  // trim(), toLowerCase(), toUpperCase(), normalize(): the value is rewritten
+  // where the call stands, and the checks written after it see the new one.
+  // `z.string().trim().min(1)` rejects "  "; its JSON Schema says minLength 1
+  // and accepts it. With nothing checked after it the verdict is the same,
+  // and the rewrite is carried like a transform so `validate(data).data` is
+  // what zod's parse gives.
+  let rewritten = false
+  for (const c of def.checks || []) {
+    const cd = c && c._zod && c._zod.def ? c._zod.def : null
+    if (cd && cd.check === 'overwrite') {
+      const text = typeof cd.tx === 'function' ? cd.tx.toString() : ''
+      const outside = text ? closesOver(text) : ['(no function)']
+      if (!placed) out.push(`${at}: a rewrite of the value (trim, toLowerCase, normalize) inside a union or record, which a page cannot place`)
+      else if (outside.length) out.push(`${at}: a rewrite of the value that closes over ${outside.join(', ')}`)
+      else if (refines !== null) refines.push({ at, tokens: tokens.slice(), kind: 't', text, guard: TYPE_GUARD[def.type] || '' })
+      rewritten = true
+      continue
+    }
+    if (rewritten && cd && cd.check !== 'custom') { out.push(`${at}: ${cd.check} after a rewrite of the value (trim, toLowerCase, normalize), which the page would check on the value as it came`); continue }
+    refineCheck(c, at, out, refines, tokens, placed, TYPE_GUARD[def.type] || '')
+  }
   if (def.type === 'transform') out.push(`${at}: transform`)
   if (def.type === 'pipe') {
     // A preprocess runs its function before the schema, which the compiled
@@ -276,6 +301,7 @@ const ADAPTERS = [
     vendor: 'zod', detect: isZodSchema, types: "import type { z } from 'zod'",
     typeExpr: (name, spec) => `z.input<typeof import(${JSON.stringify(spec)}).${name}>`,
     load: loadZod,
+    accepts: async () => (schema, doc) => schema.safeParse(doc).success,
     walk: (schema, out, refines) => unrepresentable(schema, '$', out, new Set(), refines),
     convert: (z, schema) => patternOnly(dropSchema(z.toJSONSchema(schema, { target: 'draft-2020-12', io: 'input', unrepresentable: 'throw' }))),
   },
@@ -283,6 +309,7 @@ const ADAPTERS = [
     vendor: 'valibot', detect: isValibotSchema, types: "import type { InferInput } from 'valibot'",
     typeExpr: (name, spec) => `InferInput<typeof import(${JSON.stringify(spec)}).${name}>`,
     load: (file) => loadFrom(file, '@valibot/to-json-schema', 'the official converter, for toJsonSchema'),
+    accepts: async (file) => { const m = await loadFrom(file, 'valibot', 'for the check against the compiled validators'); const safeParse = m.safeParse ?? m.default.safeParse; return (schema, doc) => safeParse(schema, doc).success },
     walk: (schema, out, refines) => walkValibot(schema, '$', out, new Set(), refines, [], true),
     convert: (m, schema) => {
       const toJsonSchema = m.toJsonSchema ?? (m.default && m.default.toJsonSchema)
@@ -295,6 +322,7 @@ const ADAPTERS = [
     vendor: 'typebox', detect: isTypeBoxSchema, types: "import type { Static } from '@sinclair/typebox'",
     typeExpr: (name, spec) => `Static<typeof import(${JSON.stringify(spec)}).${name}>`,
     load: async () => null,
+    accepts: async (file) => { const m = await loadFrom(file, '@sinclair/typebox/value', 'for the check against the compiled validators'); const Value = m.Value ?? m.default.Value; return (schema, doc) => Value.Check(schema, doc) },
     walk: (schema, out) => walkTypeBox(schema, '$', out, new Set(), typeof schema.$id === 'string' ? schema.$id : null),
     convert: (_, schema) => literalUnions(dropSchema(JSON.parse(JSON.stringify(schema)))),
   },
@@ -415,7 +443,7 @@ export function render(schemas, validatorOptions, toTypeScript, source, typeImpo
 
 // The JSON Schemas of one module's zod exports, or a thrown error naming
 // what cannot be carried.
-export async function schemasOf(file, mod, entry, log, refinesOut = null, vendorsOut = null) {
+export async function schemasOf(file, mod, entry, log, refinesOut = null, vendorsOut = null, droppedOut = null) {
   const picked = Object.keys(mod).map((k) => [k, ADAPTERS.find((a) => a.detect(mod[k]))]).filter(([, a]) => a)
   const only = entry.vendor ? picked.filter(([, a]) => a.vendor === entry.vendor) : picked
   if (!only.length) throw new Error(`unplugin-ata: zod: ${file} exports no ${entry.vendor || 'zod, valibot or TypeBox'} schema`)
@@ -431,9 +459,10 @@ export async function schemasOf(file, mod, entry, log, refinesOut = null, vendor
     if (vendorsOut !== null) vendorsOut[name] = adapter
     if (dropped.length) {
       if (!entry.dropRefinements) {
-        throw new Error(`unplugin-ata: ${adapter.vendor}: ${path.basename(file)} export ${name}: ${dropped.join(', ')}. The conversion drops these without a word, and a page would then accept what the ${adapter.vendor} schema rejects. Write the rule as a JSON Schema constraint (pattern, minimum, enum), move a transform after validation, or set dropRefinements: true to take them out knowingly.`)
+        throw new Error(`unplugin-ata: ${adapter.vendor}: ${path.basename(file)} export ${name}: ${dropped.join(', ')}. The conversion drops these without a word, and a page would then not answer as the ${adapter.vendor} schema does. Write the rule as a JSON Schema constraint (pattern, minimum, enum), move a transform after validation, or set dropRefinements: true to take them out knowingly.`)
       }
       if (log) log.warn(`unplugin-ata: ${adapter.vendor}: ${path.basename(file)} export ${name}: dropped ${dropped.join(', ')} (dropRefinements)`)
+      if (droppedOut !== null) droppedOut.add(name)
     }
     const convert = (s) => {
       try { return adapter.convert(z, s) } catch (e) {
@@ -457,10 +486,50 @@ function patternOnly(node) {
   return node
 }
 
+// The written validators held against the library they were made from: for
+// each export, documents made from its JSON Schema (valid ones, ones with a
+// rule broken, the two sides of every bound) are given to the library's own
+// check and to the validator in `text`, and the two verdicts are compared.
+// The conversion to JSON Schema and the compilation both sit between a zod
+// schema and what a page runs, and a difference in either is a page that
+// accepts what the schema rejects, or refuses what it takes. `text` is
+// loaded from a file beside the module, so it resolves what the written file
+// will. An export whose refinements were dropped knowingly is not compared.
+export async function agreement(file, base, text, mod, schemas, vendors, dropped, generate, count) {
+  const tmp = path.join(path.dirname(base), `.${path.basename(base)}.validators.verify-${process.pid}.mjs`)
+  const fs = await import('node:fs/promises')
+  const report = { exports: 0, documents: 0, skipped: [], disagreements: [] }
+  await fs.writeFile(tmp, text)
+  try {
+    const written = await import(pathToFileURL(tmp).href + '?t=' + Date.now() + Math.random())
+    const checks = new Map()
+    for (const name of Object.keys(schemas)) {
+      if (dropped.has(name)) { report.skipped.push(`${name}: refinements dropped`); continue }
+      const adapter = vendors[name]
+      if (!checks.has(adapter.vendor)) checks.set(adapter.vendor, await adapter.accepts(file))
+      const source = checks.get(adapter.vendor)
+      const copy = (d) => d === undefined ? d : JSON.parse(JSON.stringify(d))
+      const compiled = (d) => written[name].isValidObject(copy(d)) === true
+      let docs
+      try { docs = generate(schemas[name], count, 1, compiled).filter((d) => d !== undefined) } catch (e) { report.skipped.push(`${name}: ${e.message}`); continue }
+      report.exports++
+      let shown = 0
+      for (const d of docs) {
+        let want
+        try { want = source(mod[name], copy(d)) === true } catch (e) { report.skipped.push(`${name}: ${adapter.vendor} threw on a document (${e && e.message ? String(e.message).slice(0, 80) : e})`); break }
+        const got = compiled(d)
+        report.documents++
+        if (got !== want && shown++ < 3) report.disagreements.push({ name, vendor: adapter.vendor, document: JSON.stringify(d).slice(0, 300), source: want, compiled: got })
+      }
+    }
+  } finally { await fs.rm(tmp, { force: true }) }
+  return report
+}
+
 // Write the validators for every module the option names. `resolveFiles`
 // expands the globs; `importModule` loads a module's namespace (jiti for
 // TypeScript). Returns the files written and the exports found.
-export async function compileZod(option, root, write, resolveFiles, importModule, log, fresh = false, precompile = null) {
+export async function compileZod(option, root, write, resolveFiles, importModule, log, fresh = false, precompile = null, verify = null) {
   let toTypeScript = null
   try { const m = await import('ata-validator'); toTypeScript = (m.default ?? m).toTypeScript } catch {}
   const out = []
@@ -470,8 +539,8 @@ export async function compileZod(option, root, write, resolveFiles, importModule
       if (/\.validators\.(mjs|d\.mts)$/.test(file)) continue
       const abs = path.resolve(root, file)
       const mod = await importModule(abs, fresh)
-      const refines = {}; const vendors = {}
-      const schemas = await schemasOf(abs, mod, entry, log, refines, vendors)
+      const refines = {}; const vendors = {}; const droppedNames = new Set()
+      const schemas = await schemasOf(abs, mod, entry, log, refines, vendors, droppedNames)
       const vo = entry.validatorOptions || {}
       const opts = {}
       if (vo.richErrors !== true) opts.richErrors = false
@@ -501,8 +570,18 @@ export async function compileZod(option, root, write, resolveFiles, importModule
         }
         else if (log && log.warn) log.warn(`[unplugin-ata] ${path.basename(base)}.validators.mjs keeps ${kept.length || 'its'} validator(s) on the runtime: ${kept.map((k) => k.reason).join('; ') || 'nothing was replaced'}`)
       }
+      // Before anything is written: a file that disagrees with its source
+      // is not left on disk.
+      let verified = null
+      if (verify !== null) {
+        verified = await agreement(abs, base, text, mod, schemas, vendors, droppedNames, verify.generate, verify.count)
+        if (verified.disagreements.length) {
+          const lines = verified.disagreements.map((d) => `  ${d.name}: ${d.vendor} ${d.source ? 'accepts' : 'rejects'}, the written validator ${d.compiled ? 'accepts' : 'rejects'}: ${d.document}`)
+          throw new Error(`unplugin-ata: ${path.basename(abs)}: the validators written for this module do not answer as its schemas do, so nothing was written for it.\n${lines.join('\n')}\nThis is a defect in the conversion or in the compiler: please report it with the schema. \`verify: false\` writes the file without the check.`)
+        }
+      }
       const changed = (await write(base + '.validators.mjs', text)) | (await write(base + '.validators.d.mts', dts))
-      out.push({ file: abs, module: base + '.validators.mjs', exports: Object.keys(schemas), changed: !!changed, compiled: text !== js })
+      out.push({ file: abs, module: base + '.validators.mjs', exports: Object.keys(schemas), changed: !!changed, compiled: text !== js, verified })
     }
   }
   return out

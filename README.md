@@ -143,6 +143,8 @@ The page answers as zod does. The schema written is the input schema (`io: 'inpu
 
 A `.refine(fn)` or `.transform(fn)` whose function reads nothing but its own parameter is carried: its text is written into the module and run on the value at its place once the compiled check has passed, in zod's order, so a refine written after a transform sees the transformed value. A refine reports with zod's message and path (`refine((d) => d.from <= d.to, { message, path: ['to'] })` reports at `/dates/to`); a transform's result is written into the data `validate()` hands back, as a filled default is, so `validate(input).data` is what zod's `parse` gives, and `isValidObject()` leaves the input as it was. Of 337 refine calls in 195 public TypeScript files, 258 are such functions, and 88 of 153 transforms. Three refines on a three-field signup schema take the page module from 1.2 KB to 1.7 KB gzipped, the runner included. A `.pipe()` into a second schema is carried as a second compiled check on the value as it stands, at its place. A function that closes over an outside name (`(v) => v.length < MAX`), a `superRefine` or a transform that takes `ctx` (zod exposes no function for the first, the second can raise issues), a `preprocess` (it runs before the schema, which the compiled check cannot), or a refine inside a union, has no form a page can carry, and `z.toJSONSchema` drops it without a word, so a page built from such a schema would accept what the zod schema rejects. The build refuses it by export and path instead: `widget.ts export signup: $.n: refine closes over MAX, $.name: transform`. Write the rule as a constraint (`pattern`, `minimum`, `enum`), move the transform after validation, or set `dropRefinements: true` to take them out knowingly, which the build reports; a server that keeps zod still runs them. A zod type JSON Schema cannot carry (`z.date()`, `z.map()`, a function) is refused the same way. One difference in the error list: a carried refine's error appears once the schema's own checks pass, where zod lists both at once; the verdict is the same.
 
+Three more things zod does that its JSON Schema does not say are refused the same way, by export and path. A check written after `trim()`, `toLowerCase()`, `toUpperCase()` or `normalize()` sees the rewritten value in zod (`z.string().trim().min(1)` rejects `"  "`), where the JSON Schema would count the value as it came and accept it. `z.coerce.number()` converts before it checks and takes `"5"`. `.catch(value)` takes anything. A rewrite with nothing checked after it (`z.string().min(1).trim()`) is carried like a transform, so `validate(input).data` holds the trimmed value. Up to 0.15.0 these were converted without a word, and the page answered differently from zod on those values.
+
 valibot's `v.object` passes an unknown key as `z.object` does, and the page leaves it in place where valibot's output would drop it; `check` and `transform` are carried the same way, in the order of the pipe; a validation written after a transform, a `rawCheck`, `rawTransform` or `checkItems` is refused. A TypeBox schema is used as written; a kind outside the standard set, a `Transform`, a `$ref` out of the document, or a `format` registered in `FormatRegistry` (a page would pass it unchecked) is refused by path.
 
 Measured on three event schemas, one of them a union of objects, esbuild minified, gzip level 9, ata-validator 1.63.1, zod 4.6.7: the page carries 3.9 KB with the compiled validators and 93.0 KB with zod; one schema alone is 1.1 KB. The same four-field event schema in TypeBox 0.34.52: 1.1 KB compiled against 25.5 KB with `Value.Check` on the page (a `Type.Union` of literals is written as an `enum`, the same verdict without the branch kernels). In valibot 1.5.0, which is modular and small: 1.1 KB compiled against 1.7 KB with valibot on the page, so the saving there is 0.6 KB on this schema; what a valibot client gains is the compiled path and the server reading the same module, not bytes. The module beside the zod file is plain source, so a server can import it too and run the same schema on the runtime.
@@ -672,6 +674,27 @@ plugin. Imported by a build that does not, each validator brings the runtime
 compiler with it: on a page that uses one validator, bundled with esbuild and
 no plugin, 3.9 KB gzipped compiled against 142.8 KB as `new Validator`
 (ata-validator 1.63.1). A server can import the same file.
+
+Before `compile()` writes a validators file it holds it against the library
+the schemas are written in. For each export it makes documents from the schema
+(valid ones, ones with one rule broken, the two sides of every bound; 50 an
+export, or `verify: <number>`), gives each to zod's `safeParse` (valibot's
+`safeParse`, TypeBox's `Value.Check`) and to the written validator, and
+compares the two verdicts. A difference throws with the document, and the file
+is not written. `result.zod.verified` holds the counts. An export whose
+refinements were dropped with `dropRefinements` is not compared. The documents
+come from the schema, so the check sees what the schema's own rules reach; it
+is not a proof. On 17 schemas of 41 fields it added about 30 ms to a 140 ms
+compile. `verify: false` skips it. It needs ata-validator 1.61.0.
+
+`compile({ ..., check: true })` writes nothing and returns in `stale` the
+files a compile would write or change, for a CI step that fails when the
+generated files were not regenerated:
+
+```js
+const { stale } = await compile({ zod: ['src/events/*.schema.ts'], check: true })
+if (stale.length) { console.error('run the compile script:', stale); process.exit(1) }
+```
 
 Where there are many validators, `compile()` writes them as plans for one small
 interpreter instead of as checks written out one by one, when that makes the
