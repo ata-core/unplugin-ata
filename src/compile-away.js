@@ -805,7 +805,12 @@ export function compileAway(code, id, ata, options) {
   let importDecl = null
   let defineSchema = null
   let schemaOfName = null
-  let lastImportEnd = 0
+  // Where the imports a rewrite adds go: the top of the file, or after its
+  // directives ('use client', 'use server', 'use strict'), which are
+  // directives only while nothing stands before them.
+  const directives = ast.program.directives || []
+  const head = directives.length ? directives[directives.length - 1].end : 0
+  let lastImportEnd = head
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration') continue
     lastImportEnd = Math.max(lastImportEnd, stmt.end)
@@ -928,6 +933,8 @@ export function compileAway(code, id, ata, options) {
   const ctx = { declared, refs, consumers, rjsfSchemaAttrs, typeSchemas, constants: constantsOf(ast, id), defineSchema, withKeywords, extendChecks: ata.compiledExtendChecks === true, standardConsumers, standardWrapper: ata.compiledStandardWrapper === true, compiledStandard: ata.compiledStandard === true, t: ata.t || null, tName, tCalls: new Set() }
 
   const s = new MagicString(code)
+
+  const addImport = (text) => { if (head === 0) s.prepend(text); else s.appendLeft(head, '\n' + text.replace(/\n$/, '')) }
   const modules = []
   const done = new Set()
   const wrappers = { full: false, verdict: false, object: false, plain: false, bare: false, bareRich: false, standard: false }
@@ -1203,25 +1210,25 @@ export function compileAway(code, id, ata, options) {
         s.overwrite(rjsfImport.start, rjsfImport.end, named.length ? `import { ${named.join(', ')} } from ${code.slice(rjsfImport.source.start, rjsfImport.source.end)}` : '')
       }
     }
-    s.prepend(`import __ataCreatePrecompiledValidator from '@rjsf/validator-ata/lib/createPrecompiledValidator.js';\n`)
+    addImport(`import __ataCreatePrecompiledValidator from '@rjsf/validator-ata/lib/createPrecompiledValidator.js';\n`)
   }
   // The builder calls read here are pure, and marked so: a schema constant
   // only the replaced call used, and the builder with it, can then leave the
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
-  if (resolverCalls.size) s.prepend(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
-  if (wrappers.verdict) s.prepend(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
-  if (wrappers.full) s.prepend(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
-  if (wrappers.object) s.prepend(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
-  if (wrappers.plain) s.prepend(`import { fromCompiledPlain as __ataFromCompiledPlain } from 'ata-validator/compiled-plain';\n`)
-  if (wrappers.standard) s.prepend(`import { bareStandard as __ataBareStandard } from 'ata-validator/compiled-standard';\n`)
-  if (wrappers.bareRich) s.prepend(`import { bareRich as __ataBareRich } from 'ata-validator/compiled-bare-rich';\n`)
-  if (wrappers.bare) s.prepend(`import { bareVerdict as __ataBareVerdict, barePlain as __ataBarePlain } from 'ata-validator/compiled-bare';\n`)
+  if (resolverCalls.size) addImport(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
+  if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
+  if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
+  if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
+  if (wrappers.plain) addImport(`import { fromCompiledPlain as __ataFromCompiledPlain } from 'ata-validator/compiled-plain';\n`)
+  if (wrappers.standard) addImport(`import { bareStandard as __ataBareStandard } from 'ata-validator/compiled-standard';\n`)
+  if (wrappers.bareRich) addImport(`import { bareRich as __ataBareRich } from 'ata-validator/compiled-bare-rich';\n`)
+  if (wrappers.bare) addImport(`import { bareVerdict as __ataBareVerdict, barePlain as __ataBarePlain } from 'ata-validator/compiled-bare';\n`)
   // compileSafe is the pattern engine a compact module with a pattern the
   // platform RegExp does not run takes from the runtime instead of embedding.
-  if (irKernels.size) s.prepend(`import { ${[...irKernels].sort().map((n) => `${n} as __ataK_${n}`).join(', ')} } from 'ata-validator/kernels';\n`)
-  if (usesRuntime) s.prepend(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
-  if (virtualImports.length) s.prepend(virtualImports.join(''))
+  if (irKernels.size) addImport(`import { ${[...irKernels].sort().map((n) => `${n} as __ataK_${n}`).join(', ')} } from 'ata-validator/kernels';\n`)
+  if (usesRuntime) addImport(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
+  if (virtualImports.length) addImport(virtualImports.join(''))
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
   return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size, kinds }
 }
