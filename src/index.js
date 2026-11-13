@@ -400,8 +400,11 @@ async function runVerify (entries, api, count, logger) {
   const failed = []
   let checked = 0
   for (const [key, { schema, src }] of entries) {
-    const r = await api.verify.verifySource(schema, src, { generate: n, name: key })
     checked++
+    // A runtime that throws on a generated document has not answered as the
+    // module does either, and is named with the validator it happened on.
+    let r
+    try { r = await api.verify.verifySource(schema, src, { generate: n, name: key }) } catch (e) { failed.push(`${key}: could not be held against the runtime: ${e && e.message ? e.message : e}`); continue }
     if (!api.verify.ok(r)) failed.push(api.verify.renderReport([r]))
   }
   entries.clear()
