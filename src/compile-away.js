@@ -595,11 +595,11 @@ export async function sharedErrorsPay(sources, ata) {
 export const TABLE_RUNTIME_COST = 1900
 // Each scanned file the table changes, rewritten both ways: a Map of file ->
 // { modules, plans, calls }.
-export function tableForms(sources, ata) {
+export function tableForms(sources, ata, smallFormats = false) {
   const out = new Map()
   for (const [code, id] of sources) {
     let m = null; let t = null
-    try { m = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: false }) } catch {}
+    try { m = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: false, smallFormats }) } catch {}
     try { t = compileAway(code, id, ata, { sharedErrors: false, ir: true, table: true }) } catch {}
     if (!m || !t || m.code === t.code) continue
     out.set(id, { modules: m.code, plans: t.code, calls: (t.code.match(/__ataK_table(?:Plain|Rich)\(/g) || []).length })
@@ -768,6 +768,9 @@ export function compileAway(code, id, ata, options) {
   // interpreter (lib/ir/table.mjs) where one exists; decided for the whole
   // application by tablePays below.
   const table = options && options.table === true
+  // A written module names the smaller check of a format where ata-validator
+  // has one (specialize's smallFormats, from 1.64.0; an older one ignores it).
+  const smallFormats = !!(options && options.smallFormats === true)
   const typeSchema = options && typeof options.typeSchema === 'function' ? options.typeSchema : null
   // Under Bun's ahead-of-time compile a TypeScript file is type-checked with
   // the project's strictness, and a compiled module written into it as plain
@@ -973,7 +976,7 @@ export function compileAway(code, id, ata, options) {
   // them and the schema is one the table takes, the module otherwise.
   const irFor = (schema, opts, verdictOnly) => {
     let irSrc = null
-    try { irSrc = ata.ir.specialize(schema, { ...opts, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
+    try { irSrc = ata.ir.specialize(schema, { ...opts, verdict: true, fillSource: ata.defaultsSource || undefined, smallFormats }) } catch { irSrc = null }
     if (!irSrc) return null
     if (table && typeof ata.ir.tableModule === 'function') {
       let tab = null
