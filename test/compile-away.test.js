@@ -307,8 +307,11 @@ describe('compileAway shares one error runtime when a module pays for it', { ski
   const runWith = (code, sharedErrors) => compileAway(code, path.join(root, 'x.ts'), { ...ata, compiledSharedErrors: true, compiledVerdict: true }, { sharedErrors })
 
   it('writes a large schema compact, a small one self-contained', () => {
-    const big = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema())})\nexport const f = (x) => v.validate(x)\n`)
+    const big = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema(1500))})\nexport const f = (x) => v.validate(x)\n`)
     assert.ok(big && big.code.includes("from 'ata-validator/error-runtime'"), 'large schema: compact')
+    // 600 fields: below the bar, where the runtime made a bundle bigger.
+    const below = runWith(head + `const v = new Validator(${JSON.stringify(largeSchema())})\nexport const f = (x) => v.validate(x)\n`)
+    assert.ok(below && !below.code.includes('error-runtime'), 'a 600-field schema: self-contained')
     assert.equal(big.code.split("from 'ata-validator/error-runtime'").length, 2, 'one import')
     const small = runWith(head + "const v = new Validator({ type: 'object', properties: { id: { type: 'integer' } } })\nexport const f = (x) => v.validate(x)\n")
     assert.ok(small && !small.code.includes('error-runtime'), 'small schema: self-contained')
@@ -345,7 +348,8 @@ describe('compileAway shares one error runtime when a module pays for it', { ski
   it('a compact build answers as new Validator does, and is smaller', async () => {
     const esbuild = await import('esbuild')
     const dir = await outDir('shared')
-    const schema = largeSchema()
+    // Past the bar where the runtime pays (ERROR_RUNTIME_COST): about 80000.
+    const schema = largeSchema(1500)
     const src = path.join(dir, 'entry.mjs')
     await fs.writeFile(src, head + `export const Body = ${JSON.stringify(schema)}\nconst v = new Validator(${JSON.stringify(schema)})\nexport const validate = (x) => v.validate(x)\n`)
     const sizes = {}

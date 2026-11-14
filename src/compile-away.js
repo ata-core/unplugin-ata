@@ -493,14 +493,20 @@ const noJson = (methods) => ![...methods].some((m) => JSON_METHODS.has(m))
 // once. A module is written compact only when it alone saves more than the
 // runtime adds, so the choice never makes a bundle bigger, whatever else the
 // bundle holds and in whatever order files are transformed. The bar is the
-// module's gzipped saving as this transform sees it (unminified source), and
-// it was set from minified esbuild bundles of one schema each: the runtime
-// paid for itself from about 22000 bytes of that saving (a 300-property
-// schema lost 1826 bytes at 19430, a 400-property one gained 1937 at 25127).
-// Below it, a schema stays self-contained; `sharedErrors: true` writes every
-// module compact, for an application with many schemas.
+// module's gzipped saving as this transform sees it (unminified source), set
+// from minified esbuild bundles of one schema each, for a browser and for a
+// Node target, of two kinds of schema: fields described at length, and bare
+// fields. Where the runtime starts to pay differs by kind and target (about
+// 41000 for described fields in a browser, about 60000 for bare ones in Node,
+// which carries the IDNA tables the browser build leaves out), so the bar is
+// above both. It was 24000, set when the runtime was smaller; by ata-validator
+// 1.63.1 that wrote compact modules 4 to 7 KB larger than the self-contained
+// ones for schemas between the two figures. test/shared-errors-cost.test.js
+// holds the bar to real bundles. Below it, a schema stays self-contained;
+// `sharedErrors: true` writes every module compact, for an application with
+// many schemas.
 const ERROR_RUNTIME = 'ata-validator/error-runtime'
-const ERROR_RUNTIME_COST = 24000
+const ERROR_RUNTIME_COST = 65000
 const RUNTIME_IMPORT = /^import \{ createErrors as _ataCreateErrors(?:, compileSafe as _ataCompileSafe)? \} from [^\n]*\n/m
 
 // The scan and the transform weigh the same modules, and the module sources
