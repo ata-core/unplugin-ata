@@ -6,6 +6,8 @@ Each `new Validator(schema)` in your code whose schema the build can read become
 
 It also compiles JSON Schema files into self-contained modules with TypeScript declarations. Such a module imports nothing; a small schema compiles to about 1.3 KB gzipped and a ten-field one to about 2.6 KB, full error detail included, on ata-validator 1.36.0. It exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs. Schemas can be authored as `.json`, `.js` or `.ts`.
 
+A form that validates with react-hook-form's `zodResolver(schema)` is compiled the same way, without changing the form: where the build can read the schema, zod leaves the page (a Next.js form page went from 43.5 to 15.3 KB gzipped). This is on by default. `zodResolver: false` turns it off, and `npx @ata-project/unplugin scan` shows which calls a build would compile, and why not the others, before you add the plugin. See [react-hook-form with zod](#react-hook-form-with-zod-zodresolverschema).
+
 ## Install
 
 ```bash
