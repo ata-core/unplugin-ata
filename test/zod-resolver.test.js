@@ -269,6 +269,32 @@ describe('zodResolver compiled away: a build', () => {
       assert.doesNotMatch(await fs.readFile(out, 'utf8'), /__ataZodResolver/)
     } finally { await fs.rm(other, { recursive: true, force: true }) }
   })
+  it('replaces nothing in a file transformed before the scan for a zod locale has run', async () => {
+    const { unpluginFactory } = await import('../src/index.js')
+    const file = path.join(dir, 'early.js')
+    const code = `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst formSchema = z.object({\n  ${FIELDS}\n})\nexport const resolver = zodResolver(formSchema)\n`
+    const hooks = unpluginFactory({ root: dir, verify: false, report: false })
+    const early = await hooks.transform.call({}, code, file)
+    assert.ok(!early || !early.code.includes('__ataZodResolver('), 'replaced with no scan behind it')
+    await hooks.buildStart.call({})
+    assert.match((await hooks.transform.call({}, code, file)).code, /__ataZodResolver\(/)
+  })
+  it('keeps the call where a name the schema uses is declared again in the file', async () => {
+    const { unpluginFactory } = await import('../src/index.js')
+    const head = "import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst min = 2\n"
+    const hooks = unpluginFactory({ root: dir, verify: false, report: false })
+    await hooks.buildStart.call({})
+    const run = async (name, body) => { const out = await hooks.transform.call({}, head + body + '\n', path.join(dir, name + '.js')); return !!out && out.code.includes('__ataZodResolver(') }
+    assert.equal(await run('control', 'const s = z.object({ name: z.string().min(min) })\nexport const r = zodResolver(s)'), true, 'the control is replaced')
+    for (const [name, body] of [
+      ['param', 'export function useR(min) { const s = z.object({ name: z.string().min(min) }); return zodResolver(s) }'],
+      ['prop', 'export function useR({ min }) { const s = z.object({ name: z.string().min(min) }); return zodResolver(s) }'],
+      ['inner-let', 'export function useR() { let min = 5; const s = z.object({ name: z.string().min(min) }); return zodResolver(s) }'],
+      ['inner-const', 'export function useR() { const min = 5; const s = z.object({ name: z.string().min(min) }); return zodResolver(s) }'],
+      ['in-call', 'export function useR(min) { return zodResolver(z.object({ name: z.string().min(min) })) }'],
+      ['catch', 'export function useR() { try { throw 1 } catch (min) { const s = z.object({ name: z.string().min(min) }); return zodResolver(s) } }'],
+    ]) assert.equal(await run(name, body), false, `${name}: the build would read the top-level min`)
+  })
   it('leaves the call as written where the schema is used as a value, is exported, or is not carried', async () => {
     for (const [name, source] of [
       ['used.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst formSchema = z.object({\n  ${FIELDS}\n})\nexport const resolver = zodResolver(formSchema)\nexport const parse = (v) => formSchema.safeParse(v)\n`],
