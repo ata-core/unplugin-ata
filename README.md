@@ -229,9 +229,9 @@ build with the plugin would compile away, and for each of the others, why not:
 
 ```
 zodResolver: 2 of 6 calls would be compiled at build time; zod leaves the files where every call is.
-  app/signup/Form.tsx:10  zodResolver(schema): `schema` is not a constant written at the top of the file (a schema made inside a component is built on every render and cannot be read)
-  app/signup/Form.tsx:14  zodResolver(passwords): the schema has a function in it (a refine, a transform or a message function), which the build does not carry
-  app/profile/Form.tsx:9  zodResolver(tags): tags: an array is not carried yet
+  app/signup/Form.tsx:10  zodResolver(schema): the schema uses `t`, which is not zod or a constant of the file (a prop, a translation function and the like cannot be read)
+  app/signup/Form.tsx:14  zodResolver(passwords): a refine reads `minLength` from outside its own argument, which the build does not carry
+  app/profile/Form.tsx:9  zodResolver(profile): contact: a union is not carried yet
   app/links/Form.jsx:12  zodResolver(formSchema): site: url() is not carried (zod does not check it with a pattern)
 3 files read. Nothing was written.
 ```
@@ -420,8 +420,9 @@ beyond the home page, gzipped: 43.5 KB as written and 15.3 KB through the
 plugin under Turbopack, 37.3 KB and 15.8 KB under webpack. react-hook-form
 alone is 12.3 KB.
 
-The schema can be a constant of the file, built from zod and other constants
-of the file, or written in the call itself. It can also come from another module of the project, imported by
+The schema can be a constant of the file, at the top or inside the component,
+built from zod and other constants of the file, or written in the call itself.
+One built from a prop or a translation function cannot be read. It can also come from another module of the project, imported by
 name (`import { formSchema } from '@/lib/schemas'`). That module is read as
 text and never run: it has to import zod under one name and build the schema
 from zod and its own constants. A module that builds it from another module's
