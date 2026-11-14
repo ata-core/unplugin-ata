@@ -63,7 +63,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
-import { ZOD_RESOLVERS, ZOD_RUNTIME, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
+import { ZOD_RESOLVERS, ZOD_RUNTIME, ZOD_RUNTIME_PLAIN, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
@@ -1030,6 +1030,7 @@ export function compileAway(code, id, ata, options) {
   // them as values, so zod leaves the bundle; where something does, the call
   // stays as written.
   let zodDone = 0
+  let zodRewrites = false
   if (zodFile && !virtual) {
     const zHere = zodFile.zod ? zodFor(id, zodFile.zod.source, zodFile.zod.kind) : null
     // A schema the file imports by name is read from the module it comes
@@ -1103,6 +1104,7 @@ export function compileAway(code, id, ata, options) {
         s.overwrite(f.call.start, f.call.end, `__ataZodResolver(__ataCompiled${index}, ${lit(f.plan.table)}, ${lit(f.plan.paths)})`)
         done.add(f.call)
         zodDone++
+        if (f.plan.rewrites) zodRewrites = true
       }
       for (const stmt of removed) s.remove(stmt.start, stmt.end)
       // An imported schema: its name leaves the import, or stays as a type
@@ -1329,7 +1331,7 @@ export function compileAway(code, id, ata, options) {
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (resolverCalls.size) addImport(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
-  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + ZOD_RUNTIME)
+  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + (zodRewrites ? ZOD_RUNTIME : ZOD_RUNTIME_PLAIN))
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)

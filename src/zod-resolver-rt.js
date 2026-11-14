@@ -14,8 +14,9 @@ const __ataZSeg = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~')
 const __ataZEsc = (k) => k.replace(/~/g, '~0').replace(/\//g, '~1')
 const __ataZAt = (root, ip) => { let v = root; if (ip) for (const seg of ip.slice(1).split('/')) v = v == null ? undefined : v[__ataZSeg(seg)]; return v }
 // What zod hands back: the declared keys, a key present with undefined kept.
-const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : v.toUpperCase(); return v }
 const __ataZStrip = (P, ip, v) => { const k = P[ip].k; if (!k) return P[ip].x && typeof v === 'string' ? __ataZOps(P[ip].x, v) : v; const out = {}; for (const key of k) if (key in v) { const c = v[key]; out[key] = c === undefined ? c : __ataZStrip(P, ip + '/' + __ataZEsc(key), c) } return out }
+//<rewrites>
+const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : v.toUpperCase(); return v }
 // A string zod rewrites before it checks it (trim, toLowerCase, toUpperCase)
 // is rewritten in a copy of the document, which is what the check then reads.
 const __ataZPrep = (P, ip, v) => {
@@ -26,6 +27,7 @@ const __ataZPrep = (P, ip, v) => {
   for (const key of n.k) if (key in v) out[key] = __ataZPrep(P, ip + '/' + __ataZEsc(key), v[key])
   return out
 }
+//</rewrites>
 // zod's issues for a rejected document, in zod's order: [instancePath, code, message].
 const __ataZIssues = (errors, T, P, values) => {
   const issues = []
