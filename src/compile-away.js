@@ -1043,11 +1043,16 @@ export function compileAway(code, id, ata, options) {
     for (const r of refs) {
       if (r.node.name !== zodFile.resolver.local || declared.get(zodFile.resolver.local) !== 1) continue
       const call = r.parent
-      if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length !== 1 || call.arguments[0].type !== 'Identifier') continue
-      const name = call.arguments[0].name
-      if (declared.get(name) !== 1) continue
+      if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length !== 1 || call.arguments[0].type === 'SpreadElement') continue
+      const arg = call.arguments[0]
+      const name = arg.type === 'Identifier' ? arg.name : null
+      if (name !== null && declared.get(name) !== 1) continue
       let from = null
-      if (zodFile.consts.has(name)) {
+      if (name === null) {
+        // The schema written in the call: zodResolver(z.object({ ... })).
+        const src = zHere ? schemaSource(arg, zodFile, code) : null
+        if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
+      } else if (zodFile.consts.has(name)) {
         const src = zHere ? schemaSource(name, zodFile, code) : null
         if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
       } else if (named.has(name) && options.resolveImport) {

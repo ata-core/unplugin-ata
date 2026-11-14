@@ -14,7 +14,18 @@ const __ataZSeg = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~')
 const __ataZEsc = (k) => k.replace(/~/g, '~0').replace(/\//g, '~1')
 const __ataZAt = (root, ip) => { let v = root; if (ip) for (const seg of ip.slice(1).split('/')) v = v == null ? undefined : v[__ataZSeg(seg)]; return v }
 // What zod hands back: the declared keys, a key present with undefined kept.
-const __ataZStrip = (P, ip, v) => { const k = P[ip].k; if (!k) return v; const out = {}; for (const key of k) if (key in v) { const c = v[key]; out[key] = c === undefined ? c : __ataZStrip(P, ip + '/' + __ataZEsc(key), c) } return out }
+const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : v.toUpperCase(); return v }
+const __ataZStrip = (P, ip, v) => { const k = P[ip].k; if (!k) return P[ip].x && typeof v === 'string' ? __ataZOps(P[ip].x, v) : v; const out = {}; for (const key of k) if (key in v) { const c = v[key]; out[key] = c === undefined ? c : __ataZStrip(P, ip + '/' + __ataZEsc(key), c) } return out }
+// A string zod rewrites before it checks it (trim, toLowerCase, toUpperCase)
+// is rewritten in a copy of the document, which is what the check then reads.
+const __ataZPrep = (P, ip, v) => {
+  const n = P[ip]
+  if (!n.k) return n.w && typeof v === 'string' ? __ataZOps(n.w, v) : v
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return v
+  const out = Object.assign({}, v)
+  for (const key of n.k) if (key in v) out[key] = __ataZPrep(P, ip + '/' + __ataZEsc(key), v[key])
+  return out
+}
 // zod's issues for a rejected document, in zod's order: [instancePath, code, message].
 const __ataZIssues = (errors, T, P, values) => {
   const issues = []
@@ -35,15 +46,21 @@ const __ataZIssues = (errors, T, P, values) => {
   for (const i of issues) { if (stopped === i[2] && i[5] !== 2) continue; if (i[5] === 1) stopped = i[2]; out.push([i[2], i[3], i[4]]) }
   return out
 }
+// One document: { data } as zod returns it, or { issues } as zod reports them.
+const __ataZRun = (validate, T, P, values) => {
+  const doc = P[''].p ? __ataZPrep(P, '', values) : values
+  const r = validate(doc)
+  return r.valid ? { data: __ataZStrip(P, '', doc) } : { issues: __ataZIssues(r.errors, T, P, doc) }
+}
 const __ataZodResolver = (compiled, T, P, ro) => async (values, _, options) => {
-  const r = compiled.validate(values)
-  if (r.valid) {
+  const r = __ataZRun(compiled.validate, T, P, values)
+  if (r.issues === undefined) {
     options.shouldUseNativeValidation && __ataZNative({}, options)
-    return { errors: {}, values: ro && ro.raw ? Object.assign({}, values) : __ataZStrip(P, '', values) }
+    return { errors: {}, values: ro && ro.raw ? Object.assign({}, values) : r.data }
   }
   const all = !options.shouldUseNativeValidation && options.criteriaMode === 'all'
   const errors = Object.create(null)
-  for (const [ip, code, message] of __ataZIssues(r.errors, T, P, values)) {
+  for (const [ip, code, message] of r.issues) {
     const path = ip === '' ? '' : ip.slice(1).split('/').map(__ataZSeg).join('.')
     if (!errors[path]) errors[path] = { message, type: code }
     if (all) { const types = errors[path].types; const messages = types && types[code]; errors[path] = __ataZAppend(path, all, errors, code, messages ? [].concat(messages, message) : message) }
