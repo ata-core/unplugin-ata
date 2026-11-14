@@ -1030,6 +1030,9 @@ export function compileAway(code, id, ata, options) {
   // them as values, so zod leaves the bundle; where something does, the call
   // stays as written.
   let zodDone = 0
+  // Each zodResolver call left as written, with the reason, in the build's
+  // report beside the validators kept on the runtime.
+  const zodKeep = (call, reason) => { if (options && Array.isArray(options.kept)) options.kept.push({ line: call.loc ? call.loc.start.line : null, reason: `zodResolver(${call.arguments[0] && call.arguments[0].type === 'Identifier' ? call.arguments[0].name : '...'}): ${reason}`, zod: true }) }
   let zodRewrites = false
   if (zodFile && !virtual) {
     const zHere = zodFile.zod ? zodFor(id, zodFile.zod.source, zodFile.zod.kind) : null
@@ -1044,40 +1047,52 @@ export function compileAway(code, id, ata, options) {
     for (const r of refs) {
       if (r.node.name !== zodFile.resolver.local || declared.get(zodFile.resolver.local) !== 1) continue
       const call = r.parent
-      if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length !== 1 || call.arguments[0].type === 'SpreadElement') continue
+      if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length < 1 || call.arguments[0].type === 'SpreadElement') continue
+      if (call.arguments.length !== 1) { zodKeep(call, 'the call passes options, which have no compiled form'); continue }
       const arg = call.arguments[0]
       const name = arg.type === 'Identifier' ? arg.name : null
-      if (name !== null && declared.get(name) !== 1) continue
+      if (name !== null && declared.get(name) !== 1) { zodKeep(call, `\`${name}\` is declared more than once`); continue }
       let from = null
+      const why = {}
       if (name === null) {
         // The schema written in the call: zodResolver(z.object({ ... })).
-        const src = zHere ? schemaSource(arg, zodFile, code) : null
+        const src = zHere ? schemaSource(arg, zodFile, code, false, why) : null
         if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
       } else if (zodFile.consts.has(name)) {
-        const src = zHere ? schemaSource(name, zodFile, code) : null
+        const src = zHere ? schemaSource(name, zodFile, code, false, why) : null
         if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
       } else if (named.has(name) && options.resolveImport) {
         const imp = named.get(name)
         let file = null
         try { file = options.resolveImport(imp.stmt.source.value, id) } catch { file = null }
         const mod = file ? readZodModule(file, parse) : null
+        if (!file) why.why = `its module \`${imp.stmt.source.value}\` was not found among the project's files`
+        else if (!mod) why.why = `its module \`${imp.stmt.source.value}\` does not import zod under one name`
+        else if (!mod.exports.has(imp.imported)) why.why = `\`${imp.imported}\` is not a constant \`${imp.stmt.source.value}\` exports`
         if (mod && mod.exports.has(imp.imported)) {
-          const src = schemaSource(mod.exports.get(imp.imported), mod, mod.code, true)
+          const src = schemaSource(mod.exports.get(imp.imported), mod, mod.code, true, why)
           const zm = src ? zodFor(file, mod.zod.source, mod.zod.kind) : null
           if (zm) from = { z: zm, local: mod.zod.local, text: src.text, names: [], imp: { stmt: imp.stmt, sp: imp.sp, name } }
         }
       }
-      if (!from) continue
+      if (!from) {
+        zodKeep(call, why.why !== undefined ? why.why
+          : name === null || zodFile.consts.has(name) ? (zodFile.zod ? 'zod was not found from this file' : 'zod is not imported under one name (`import { z } from \'zod\'`)')
+            : named.has(name) ? 'the schema is imported and the build has no resolver for it here'
+              : `\`${name}\` is not a constant written at the top of the file (a schema made inside a component is built on every render and cannot be read)`)
+        continue
+      }
       let plan = null; let ir = null
       try {
         const schema = new Function(from.local, from.text)(from.z)
-        if (!schema || !schema._zod) continue
+        if (!schema || !schema._zod) { zodKeep(call, 'the schema is not a zod 4 schema'); continue }
         plan = planZod(schema)
         const check = new ata.Validator(plan.json, { richErrors: false })
-        if (selfCheck(schema, plan, (d) => check.validate(d)) !== null) continue
+        const differs = selfCheck(schema, plan, (d) => check.validate(d))
+        if (differs !== null) { zodKeep(call, `the compiled check did not answer as zod (${differs.slice(0, 80)}); kept as written, and worth reporting`); continue }
         ir = irFor(plan.json, { richErrors: false }, false)
-      } catch { continue }
-      if (!ir) continue
+      } catch (e) { zodKeep(call, e && e.name === 'ZodRefused' ? e.message : `the schema could not be built here (${String(e && e.message).slice(0, 80)})`); continue }
+      if (!ir) { zodKeep(call, 'ata-validator wrote no module for the schema'); continue }
       found.push({ call, names: from.names, imp: from.imp, plan, ir })
     }
     // A constant or an import something else in the file uses as a value
@@ -1093,6 +1108,7 @@ export function compileAway(code, id, ata, options) {
       const { uses } = state()
       const kept = take.filter((f) => f.names.every((n) => uses.get(n).values === 0 && declared.get(n) === 1) && (!f.imp || uses.get(f.imp.name).values === 0))
       if (kept.length === take.length) break
+      for (const f of take) if (!kept.includes(f)) zodKeep(f.call, 'the schema is also used as a value elsewhere in this file, so it cannot leave it')
       take = kept
     }
     if (take.length) {
@@ -1345,5 +1361,5 @@ export function compileAway(code, id, ata, options) {
   if (usesRuntime) addImport(`import { createErrors as _ataCreateErrors${usesSafeRe ? ', compileSafe as _ataCompileSafe' : ''} } from '${ERROR_RUNTIME}';\n`)
   if (virtualImports.length) addImport(virtualImports.join(''))
   s.appendLeft(lastImportEnd, '\n' + modules.join(''))
-  return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size, kinds }
+  return { code: s.toString(), map: s.generateMap({ hires: true, source: id, includeContent: true }), replaced: done.size, kinds, zod: zodDone }
 }

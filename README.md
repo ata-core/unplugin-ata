@@ -217,6 +217,30 @@ Add the generated files to `.gitignore`:
 Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 `<name>.validator.mjs` and `<name>.validator.d.mts`.
 
+## See what a build would do, before installing anything
+
+```bash
+npx @ata-project/unplugin scan
+```
+
+reads the project in the current directory (or the one you name) and says
+which `zodResolver(...)`, `new Validator(...)` and `ataResolver(...)` calls a
+build with the plugin would compile away, and for each of the others, why not:
+
+```
+zodResolver: 2 of 6 calls would be compiled at build time; zod leaves the files where every call is.
+  app/signup/Form.tsx:10  zodResolver(schema): `schema` is not a constant written at the top of the file (a schema made inside a component is built on every render and cannot be read)
+  app/signup/Form.tsx:14  zodResolver(passwords): the schema has a function in it (a refine, a transform or a message function), which the build does not carry
+  app/profile/Form.tsx:9  zodResolver(tags): tags: an array is not carried yet
+  app/links/Form.jsx:12  zodResolver(formSchema): site: url() is not carried (zod does not check it with a pattern)
+3 files read. Nothing was written.
+```
+
+It runs the plugin's own transform on each file and throws the output away,
+so it says what a build says; it needs `zod`, `react-hook-form` and
+`@hookform/resolvers` installed in the project, as the build does. `--json`
+prints the same as data. A build prints the same lines in its report.
+
 ## Options
 
 | Option | Default | Description |
