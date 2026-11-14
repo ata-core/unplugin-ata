@@ -118,7 +118,7 @@ function cachedApi(session, api) {
 export const unpluginFactory = (userOptions = {}) => {
   const session = createSession(userOptions)
 
-  return {
+  const hooks = {
     name: 'unplugin-ata',
     enforce: 'pre',
 
@@ -195,6 +195,7 @@ export const unpluginFactory = (userOptions = {}) => {
 
     async transform(code, id) {
       if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
+      if (session.ready) await session.ready
       const api = await session.api()
       if (!api.compiledModuleFor) {
         // Only a caller who asked for it hears that it could not happen; on
@@ -386,6 +387,13 @@ export const unpluginFactory = (userOptions = {}) => {
       },
     },
   }
+  // webpack and Rspack run buildStart beside the build of the entries
+  // (unplugin taps `make`, a parallel hook), so a file can reach transform()
+  // while the choices are still being made. buildStart keeps its promise, and
+  // transform() waits on it.
+  const start = hooks.buildStart
+  hooks.buildStart = function () { session.ready = start.call(this); return session.ready }
+  return hooks
 }
 
 const unplugin = /* #__PURE__ */ createUnplugin(unpluginFactory)
