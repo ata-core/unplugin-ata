@@ -118,6 +118,25 @@ function cachedApi(session, api) {
 export const unpluginFactory = (userOptions = {}) => {
   const session = createSession(userOptions)
 
+  // Whether what a transform writes goes to a browser, for `smallFormats`
+  // 'auto': a form checks an address once a submit, so the smaller check is
+  // the better one there, and a server keeps the faster scanner. Known under
+  // webpack and Rspack (the compiler's target), Vite (the ssr flag), esbuild
+  // (the platform) and Turbopack (the loader's target); elsewhere the
+  // scanner stays.
+  const forBrowser = (hook) => {
+    if (typeof userOptions.smallFormats === 'boolean') return userOptions.smallFormats
+    if (hook && typeof hook.target === 'string') return hook.target === 'web'
+    if (session.compiler) {
+      const o = session.compiler.options || {}
+      if (o.externalsPresets && typeof o.externalsPresets.web === 'boolean') return o.externalsPresets.web
+      return [].concat(o.target === undefined ? 'web' : o.target).some((t) => typeof t === 'string' && t.startsWith('web'))
+    }
+    if (session.vite) return !session.viteSsr && !(hook && hook.ssr)
+    if (session.esbuildPlatform !== undefined) return session.esbuildPlatform === 'browser'
+    return false
+  }
+
   // What a build decides before its first file: schemas compiled, and the
   // `sharedErrors` and `table` choices for what loads together.
   const prepare = async () => {
@@ -164,7 +183,7 @@ export const unpluginFactory = (userOptions = {}) => {
       if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
         const sources = scanOnce(session)
         const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
-        const forms = tableForms(sources, cachedApi(session, api))
+        const forms = tableForms(sources, cachedApi(session, api), forBrowser(null))
         const kept = await perLoad(session.loads, new Set(resolved([...forms.keys()])), async (files) => (await tableFormsPay(forms, files.map((f) => byId.get(f)))).pays)
         session.tableFiles = kept
         session.tableDecision = kept.size > 0
@@ -203,7 +222,7 @@ export const unpluginFactory = (userOptions = {}) => {
       return SOURCE.test(file) && !file.split(/[\\/]/).includes('node_modules')
     },
 
-    async transform(code, id) {
+    async transform(code, id, hook) {
       if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
       if (session.ready) await session.ready
       const api = await session.api()
@@ -226,7 +245,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, smallFormats: forBrowser(hook), sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },
@@ -290,6 +309,7 @@ export const unpluginFactory = (userOptions = {}) => {
     // working directory. `root` given explicitly wins everywhere.
     webpack(compiler) {
       if (!userOptions.root && compiler.context) session.root = compiler.context
+      session.compiler = compiler
       session.entries = entryList(compiler.options && compiler.options.entry)
       session.entryBase = compiler.context
       session.logger = compiler.getInfrastructureLogger?.('unplugin-ata') ?? null
@@ -297,6 +317,7 @@ export const unpluginFactory = (userOptions = {}) => {
 
     rspack(compiler) {
       if (!userOptions.root && compiler.context) session.root = compiler.context
+      session.compiler = compiler
       session.entries = entryList(compiler.options && compiler.options.entry)
       session.entryBase = compiler.context
       session.logger = compiler.getInfrastructureLogger?.('unplugin-ata') ?? null
@@ -307,6 +328,7 @@ export const unpluginFactory = (userOptions = {}) => {
         const cwd = build.initialOptions && build.initialOptions.absWorkingDir
         if (!userOptions.root && cwd) session.root = cwd
         session.entries = entryList(build.initialOptions && build.initialOptions.entryPoints)
+        session.esbuildPlatform = (build.initialOptions && build.initialOptions.platform) || 'browser'
         session.entryBase = cwd || process.cwd()
       },
     },
@@ -376,6 +398,8 @@ export const unpluginFactory = (userOptions = {}) => {
     vite: {
       configResolved(config) {
         if (!userOptions.root) session.root = config.root || session.root
+        session.vite = true
+        session.viteSsr = !!(config.build && config.build.ssr)
         const b = config.build || {}
         const lib = b.lib && b.lib.entry
         const input = (b.rollupOptions && b.rollupOptions.input) || (b.rolldownOptions && b.rolldownOptions.input) || lib
