@@ -19,11 +19,13 @@
 // formats zod checks with a pattern, as a check or as the schema itself; trim,
 // toLowerCase and toUpperCase before the checks or after them), numbers (int, min, max, gt, lt,
 // positive and the like), booleans, enums, literals, optional fields and
-// nested objects, and arrays of these. Refused: unions, nullable, url, refine, transform,
+// nested objects, arrays of these, and refine where its function reads only
+// its argument. Refused: unions, nullable, url, a refine that reads more, transform,
 // default, coerce, a rewrite between two checks, strict and passthrough
 // objects, zod 3.
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
+import { closesOver } from './zod.js'
 
 export const ZOD_RESOLVERS = '@hookform/resolvers/zod'
 const RT_TEXT = fs.readFileSync(new URL('./zod-resolver-rt.js', import.meta.url), 'utf8')
@@ -32,7 +34,12 @@ export const ZOD_RUNTIME = bare(RT_TEXT)
 // Without the part that rewrites strings, for a file none of whose forms has
 // a trim or a case rewrite: the rest only reaches it through a plan that
 // says so (plan.rewrites).
-export const ZOD_RUNTIME_PLAIN = bare(RT_TEXT.replace(/\/\/<rewrites>\n[\s\S]*?\/\/<\/rewrites>\n/, ''))
+const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*?//</${part}>\\n`), '')
+// The run-time text for a file: the part that rewrites strings and the part
+// that runs refine functions only where a plan of the file needs them. The
+// rest reaches them only through a plan that says so.
+export const zodRuntimeFor = (rewrites, refines) => bare(without(without(RT_TEXT, rewrites ? '-' : 'rewrites'), refines ? '-' : 'refines'))
+export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
@@ -44,7 +51,7 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER
 // What a refusal says for the kinds of schema that are not carried.
 const KINDS = {
   union: 'a union is not carried yet', nullable: 'nullable() is not carried yet', default: 'default() is not carried yet',
-  pipe: 'a transform or a pipe is not carried', transform: 'a transform is not carried', custom: 'refine() is not carried', date: 'a date is not carried',
+  pipe: 'a transform or a pipe is not carried', transform: 'a transform is not carried', date: 'a date is not carried',
   any: 'any() is not carried', unknown: 'unknown() is not carried', record: 'a record is not carried', tuple: 'a tuple is not carried', lazy: 'lazy() is not carried',
   intersection: 'an intersection is not carried', catch: 'catch() is not carried', readonly: 'readonly() is not carried', file: 'a file is not carried', bigint: 'a bigint is not carried',
   null: 'null() is not carried', undefined: 'undefined() is not carried', nonoptional: 'nonoptional() is not carried', template_literal: 'a template literal is not carried',
@@ -70,6 +77,26 @@ export function planZod (schema) {
   const paths = {}      // instancePath -> { o: order, u: [code, message] when undefined }
   let order = 0
   let rewrites = false
+  // refine(): [pattern, rank, function, message, path, stops], in the order
+  // zod runs them (a node's children before the node), and the functions.
+  const refines = []; const fns = []
+  const refine = (d, rank, ip, owner) => {
+    if (typeof d.fn !== 'function' || d.when) no('a check written with check() or superRefine() is not carried')
+    if (d.fn.constructor && d.fn.constructor.name !== 'Function') no('an async refine is not carried')
+    const outside = closesOver(String(d.fn))
+    if (outside.length) no(`a refine that reads ${outside.map((n) => '`' + n + '`').join(', ')} from outside its own argument is not carried`)
+    // Its message: its own, or the one the schema it stands on was given
+    // (z.string({ error })), which zod uses for a check that has none.
+    let message = null
+    const error = d.error || owner.error
+    if (error) {
+      const said = [undefined, 'x'].map((input) => { const m = error({ code: 'custom', input, path: [], inst: null }); return typeof m === 'string' ? m : m && typeof m.message === 'string' ? m.message : undefined })
+      if (said[0] === undefined || said[0] !== said[1]) no('a refine whose message is a function of the value is not carried')
+      message = said[0]
+    }
+    if (!Array.isArray(d.path || []) || (d.path || []).some((x) => typeof x !== 'string' && typeof x !== 'number')) no('a refine with a path that is not names and indexes is not carried')
+    refines.push([ip, rank, fns.push(d.fn) - 1, message, (d.path || []).map((x) => '/' + esc(String(x))).join(''), d.abort ? 1 : 0])
+  }
   // A refusal names the field it is about, as the form names it.
   const walk = (node, sp, ip) => {
     try { return walkNode(node, sp, ip) } catch (e) {
@@ -80,7 +107,7 @@ export function planZod (schema) {
   const walkNode = (node, sp, ip) => {
     let def = node._zod.def
     let optional = false
-    if (def.type === 'optional') { optional = true; node = def.innerType; def = node._zod.def }
+    if (def.type === 'optional') { if ((def.checks || []).length) no('a check written after optional() is not carried'); optional = true; node = def.innerType; def = node._zod.def }
     const here = paths[ip] = { o: order++ }
     if (!optional) { const u = issuesOf(node, undefined); if (u.length !== 1) no(u.length === 0 ? 'a field that takes a missing value without being optional (any, unknown, a default) is not carried' : 'zod reports more than one thing for a missing value here'); here.u = [u[0].code, u[0].message] }
     else here.q = 1
@@ -127,7 +154,7 @@ export function planZod (schema) {
         if (d.check === 'min_length' && d.minimum >= 1) len.push([0, d.minimum, rank, 'too_small', ...origins(d.minimum - 1, (i) => i.code === 'too_small' && i.minimum === d.minimum, 'min')])
         if (d.check === 'max_length') len.push([1, d.maximum, rank, 'too_big', ...origins(d.maximum + 1, (i) => i.code === 'too_big' && i.maximum === d.maximum, 'max')])
         if (d.check === 'length_equals') { if (d.length >= 1) len.push([0, d.length, rank, 'too_small', ...origins(d.length - 1, (i) => i.code === 'too_small' && i.exact === true, 'length')]); len.push([1, d.length, rank, 'too_big', ...origins(d.length + 1, (i) => i.code === 'too_big' && i.exact === true, 'length')]) }
-        if (d.check === 'overwrite') return
+        if (d.check === 'custom') { refine(d, rank, ip, def); return }
         if (d.check === 'min_length') { if (d.minimum < 1) return; put('minLength', d.minimum, [rank, ...one(node, 'a'.repeat(d.minimum - 1), (i) => i.code === 'too_small' && i.minimum === d.minimum, 'min')]) }
         else if (d.check === 'max_length') { if (d.maximum > 100000) no('a very long maximum'); put('maxLength', d.maximum, [rank, ...one(node, 'a'.repeat(d.maximum + 1), (i) => i.code === 'too_big' && i.maximum === d.maximum, 'max')]) }
         else if (d.check === 'length_equals') {
@@ -153,6 +180,7 @@ export function planZod (schema) {
       table[`${sp}/type`] = t
       checks.forEach((c, rank) => {
         const d = c._zod.def
+        if (d.check === 'custom') { refine(d, rank, ip, def); return }
         if (d.check === 'number_format') {
           put('maximum', MAX_SAFE, [rank, ...one(node, 2 ** 60, (i) => i.code === 'too_big' && i.maximum === MAX_SAFE, 'int upper')])
           put('minimum', -MAX_SAFE, [rank, ...one(node, -(2 ** 60), (i) => i.code === 'too_small' && i.minimum === -MAX_SAFE, 'int lower')])
@@ -171,7 +199,7 @@ export function planZod (schema) {
       out.enum = values
       const probes = [null, '\u0000 not a member', -0.123456789, {}].map((p) => issuesOf(node, p))
       if (!probes.every((i) => i.length === 1 && i[0].code === probes[0][0].code && i[0].message === probes[0][0].message)) no('an enum message that depends on the value')
-      table[`${sp}/enum`] = [0, probes[0][0].code, probes[0][0].message]
+      table[`${sp}/enum`] = [0, probes[0][0].code, probes[0][0].message, 0, 1]
     } else if (def.type === 'array') {
       const el = def.element
       if (el._zod.def.type === 'optional') no('an array of optional items is not carried')
@@ -183,7 +211,8 @@ export function planZod (schema) {
       const filled = (n) => new Array(n).fill(null)
       checks.forEach((c, rank) => {
         const d = c._zod.def
-        const n = d.check === 'min_length' ? d.minimum : d.check === 'max_length' ? d.maximum : d.check === 'length_equals' ? d.length : no(d.check === 'custom' ? 'refine() on an array is not carried' : `the array check ${d.check} is not carried`)
+        if (d.check === 'custom') return
+        const n = d.check === 'min_length' ? d.minimum : d.check === 'max_length' ? d.maximum : d.check === 'length_equals' ? d.length : no(`the array check ${d.check} is not carried`)
         if (n > 10000) no('a very long array bound')
         const small = (i) => i.code === 'too_small' && (d.check === 'length_equals' ? i.exact === true : i.minimum === n)
         const big = (i) => i.code === 'too_big' && (d.check === 'length_equals' ? i.exact === true : i.maximum === n)
@@ -193,9 +222,10 @@ export function planZod (schema) {
       })
       if (out.allOf) no('two length checks of one kind on an array')
       out.items = walk(el, `${sp}/items`, `${ip}/*`)
+      checks.forEach((c, rank) => { if (c._zod.def.check === 'custom') refine(c._zod.def, rank, ip, def) })
     } else if (def.type === 'object') {
       if (def.catchall) no('a strict, loose or catchall object is not carried')
-      if (checks.length) no(checks.some((c) => c._zod.def.check === 'custom') ? 'refine() on an object is not carried' : 'a check on an object is not carried')
+      if (checks.some((c) => c._zod.def.check !== 'custom')) no('a check on an object other than refine() is not carried')
       out.type = 'object'; table[`${sp}/type`] = { t: typeEntry(node, 'object', [null, 'a', 1, true]) }
       out.properties = {}; const required = []; here.k = Object.keys(def.shape)
       for (const k of here.k) {
@@ -205,12 +235,13 @@ export function planZod (schema) {
         out.properties[k] = walk(child, `${sp}/properties/${esc(k)}`, `${ip}/${esc(k)}`)
       }
       if (required.length) out.required = required
+      checks.forEach((c, rank) => refine(c._zod.def, rank, ip, def))
     } else no(KINDS[def.type] || `${def.type} is not carried`)
     return out
   }
   if (schema._zod.def.type !== 'object') no(schema._zod.def.type === 'pipe' ? 'the schema is a transform or a pipe, which is not carried' : 'the schema is not an object')
   const json = walk(schema, '#', '')
-  return { json, table, paths, rewrites }
+  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns }
 }
 
 // The zod a file imports, as that file resolves it: the value its local name
@@ -245,7 +276,10 @@ export function selfCheck (schema, plan, validate) {
       const min = bound('min_length') || 0; const max = bound('max_length')
       const n = Math.max(min, Math.min(2, max === undefined ? 2 : max))
       if (n > 50) throw new ZodRefused('an array that needs many items')
+      const before = [leaves.length, arrays.length]
       const item = good(def.element, ip.concat(0))
+      // An array that has to be empty has no first item to vary.
+      if (n === 0) { leaves.length = before[0]; arrays.length = before[1] }
       arrays.push({ ip, item, n, min, max })
       return Array.from({ length: n }, () => copyOf(item))
     }
@@ -277,12 +311,12 @@ export function selfCheck (schema, plan, validate) {
   for (let i = 0; i < 60 && leaves.length > 1; i++) { let d = base; for (const ip of leaves) if (next(3) === 0) d = set(d, ip, POOL[next(POOL.length)], next(5) === 0); docs.push(d) }
   for (const d of docs) {
     const want = schema.safeParse(copy(d))
-    const got = RT.run(validate, plan.table, plan.paths, copy(d))
+    const got = RT.run(validate, plan.table, plan.paths, copy(d), plan.refines, plan.fns)
     if (want.success !== (got.issues === undefined)) return `verdict on ${show(d)}`
     if (want.success) { if (show(want.data) !== show(got.data)) return `data on ${show(d)}`; continue }
     const mine = got.issues
     const theirs = want.error.issues.map((i) => ['' + i.path.map((s) => '/' + String(s).replace(/~/g, '~0').replace(/\//g, '~1')).join(''), i.code, i.message])
-    if (show(mine) !== show(theirs)) return `issues on ${show(d)}`
+    if (show(mine) !== show(theirs)) return `issues on ${show(d)}: zod ${show(theirs)}, the build ${show(mine)}`
   }
   return null
 }
@@ -299,7 +333,7 @@ const walk = (root, f) => {
   const go = (n, up) => {
     if (seen.has(n)) return
     seen.add(n)
-    f(n, up)
+    if (f(n, up) === false) return
     for (const k of Object.keys(n)) {
       if (SKIP.has(k) || k[0] === '_') continue
       const v = n[k]
@@ -375,6 +409,13 @@ export function schemaSource (name, info, code, exportedToo = false, out = {}) {
     let ok = true
     walk(node, (n, up) => {
       if (!ok) return
+      // A function is read where it is what refine() is given and reads
+      // nothing but its own argument; its body is not walked.
+      if (/^(?:Arrow)?FunctionExpression$/.test(n.type) && !n.async && !n.generator && up && up[0].type === 'CallExpression' && up[1] === 'arguments' && up[0].arguments[0] === n && up[0].callee.type === 'MemberExpression' && !up[0].callee.computed && up[0].callee.property.name === 'refine') {
+        const outside = closesOver(code.slice(n.start, n.end))
+        if (outside.length) ok = fail(`a refine reads ${outside.map((x) => '`' + x + '`').join(', ')} from outside its own argument, which the build does not carry`)
+        return false
+      }
       if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = fail(/Function/.test(n.type) ? 'the schema has a function in it (a refine, a transform or a message function), which the build does not carry' : n.type.startsWith('TS') ? 'the schema has TypeScript syntax in it (a cast or a type argument)' : `the schema has a ${n.type} in it, which the build does not read`); return }
       // Nothing but zod's own methods by name: no computed member, and none
       // of the names that reach a function constructor.
