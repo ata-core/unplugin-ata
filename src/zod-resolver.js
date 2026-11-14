@@ -381,6 +381,16 @@ export function readZodFile (ast, needResolver = true) {
       else if (!stmt.source) for (const sp of stmt.specifiers) if (sp.type === 'ExportSpecifier' && sp.exportKind !== 'type' && sp.local.type === 'Identifier') { exports.set(sp.exported.name || sp.exported.value, sp.local.name); const c = consts.get(sp.local.name); if (c) c.exported = true }
     }
   }
+  // A constant declared inside a function, a component's body say: read like
+  // one at the top of the file where the file declares that name once (the
+  // caller checks). Its source still may name nothing but zod and constants,
+  // so one built from a prop or a translation function is not read.
+  walk(ast.program, (n, up) => {
+    if (n.type !== 'VariableDeclaration' || !up || up[0].type === 'Program' || up[0].type === 'ExportNamedDeclaration') return
+    if (up[0].type !== 'BlockStatement' || n.kind !== 'const' || n.declarations.length !== 1 || n.declarations[0].id.type !== 'Identifier' || !n.declarations[0].init) return
+    const name = n.declarations[0].id.name
+    if (!consts.has(name)) consts.set(name, { stmt: n, init: n.declarations[0].init, exported: false, local: true })
+  })
   // `export { x }` written before the constant it names.
   for (const local of exports.values()) { const c = consts.get(local); if (c) c.exported = true }
   return resolver || !needResolver ? { zod, resolver, consts, exports } : null
@@ -420,7 +430,7 @@ export function schemaSource (name, info, code, exportedToo = false, out = {}) {
       // Nothing but zod's own methods by name: no computed member, and none
       // of the names that reach a function constructor.
       if ((n.type === 'MemberExpression' || n.type === 'OptionalMemberExpression') && (n.computed || /^(?:constructor|prototype|__proto__|call|apply|bind)$/.test(n.property.name))) { ok = fail('the schema reads a member the build does not follow'); return }
-      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name)) ok = fail(`the schema uses \`${n.name}\`, which is not zod or a constant written at the top of the file`); else if (!visit(n.name)) ok = false }
+      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name)) ok = fail(`the schema uses \`${n.name}\`, which is not zod or a constant of the file (a prop, a translation function and the like cannot be read)`); else if (!visit(n.name)) ok = false }
     })
     return ok
   }
@@ -430,7 +440,7 @@ export function schemaSource (name, info, code, exportedToo = false, out = {}) {
     const c = info.consts.get(nm)
     // In the file of the call an exported constant has readers the build
     // does not see, so it cannot be taken out and is not read.
-    if (!c) return fail(`\`${nm}\` is not a constant written at the top of the file`)
+    if (!c) return fail(`\`${nm}\` is not a constant the build can read`)
     if (c.exported && !exportedToo) return fail(`\`${nm}\` is exported, so other files may read it and it cannot leave this one`)
     if (!readable(c.init)) return false
     order.push(nm)

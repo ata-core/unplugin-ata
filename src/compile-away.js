@@ -1080,7 +1080,7 @@ export function compileAway(code, id, ata, options) {
         zodKeep(call, why.why !== undefined ? why.why
           : name === null || zodFile.consts.has(name) ? (zodFile.zod ? 'zod was not found from this file' : 'zod is not imported under one name (`import { z } from \'zod\'`)')
             : named.has(name) ? 'the schema is imported and the build has no resolver for it here'
-              : `\`${name}\` is not a constant written at the top of the file (a schema made inside a component is built on every render and cannot be read)`)
+              : `\`${name}\` is not a constant the build can read (a \`const\` of one name, at the top of the file or in a function)`)
         continue
       }
       let plan = null; let ir = null

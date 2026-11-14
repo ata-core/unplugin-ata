@@ -211,6 +211,12 @@ describe('zodResolver compiled away: a build', () => {
     assert.doesNotMatch(kept.text, /__ataZodResolver/)
     assert.match(kept.text, HAS_ZOD)
   })
+  it('reads a schema declared inside the component, where it is made of zod alone', async () => {
+    const { text, mod } = await build('inside.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nexport function useResolver() {\n  const formSchema = z.object({\n  ${FIELDS}\n  })\n  return zodResolver(formSchema)\n}\nexport function useOther(t) {\n  const other = z.object({ name: z.string().min(2, t('short')) })\n  return zodResolver(other)\n}\n`)
+    assert.equal((text.match(/__ataZodResolver\(/g) || []).length, 1, 'the one made of zod alone, not the one that calls t()')
+    assert.match(text, HAS_ZOD, 'the second schema still needs zod')
+    await same(mod.useResolver())
+  })
   it('keeps the type a TypeScript file infers from the schema', async () => {
     const { text, mod } = await build('typed.ts', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst formSchema = z.object({\n  ${FIELDS}\n})\nexport type FormValues = z.infer<typeof formSchema>\nexport const resolver = zodResolver(formSchema)\nexport const first = (v: FormValues): string => v.username\n`)
     assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
