@@ -116,6 +116,19 @@ export interface Options {
    * Needs ata-validator 1.50.0.
    */
   sharedErrors?: 'auto' | boolean
+  /**
+   * Which error fields a compiled validator carries. A validator made
+   * without options gives rich errors. With `'auto'` (the default) the build
+   * follows each `validate()` result through the file, and where every error
+   * is read only through `keyword`, `instancePath`, `schemaPath`, `params`
+   * and `message` it writes the validator as if it had been given
+   * `richErrors: false`: those five fields hold the same values in the same
+   * order, and the rich pipeline leaves the bundle. An error, the list or the
+   * result that reaches code the build does not follow keeps the rich
+   * errors, as does a validator whose options name `richErrors`. `'all'`
+   * keeps rich errors everywhere.
+   */
+  errorFields?: 'auto' | 'all'
 }
 
 export interface CompileResult {
