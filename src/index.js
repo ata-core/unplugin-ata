@@ -148,6 +148,8 @@ export const unpluginFactory = (userOptions = {}) => {
     enforce: 'pre',
 
     async buildStart() {
+      // Outside a bundler (src/scan.js) the caller passes the logger.
+      if (!session.logger && userOptions.logger) session.logger = userOptions.logger
       const { files, results } = await session.compileAll()
       const changed = results.filter((r) => r.changed).length
       session.logger?.info?.(`[unplugin-ata] compiled ${files.length} schema(s), ${changed} file(s) written`)
@@ -243,7 +245,7 @@ export const unpluginFactory = (userOptions = {}) => {
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
       const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured !== true, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
-      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
+      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced - (out.zod || 0) : 0, kinds: out ? out.kinds : null, kept, zod: out ? out.zod || 0 : 0 })
       return out ? { code: out.code, map: out.map } : null
     },
 
@@ -285,12 +287,21 @@ export const unpluginFactory = (userOptions = {}) => {
       let replaced = 0
       const kinds = { standard: 0, verdict: 0, plain: 0, errors: 0 }
       const kept = []
+      // zodResolver calls are counted apart: a call left as written keeps zod
+      // on that page, not ata-validator's runtime.
+      let zod = 0
+      const zodKept = []
       for (const [file, r] of session.report) {
         replaced += r.replaced
+        zod += r.zod || 0
         if (r.kinds) for (const k of Object.keys(kinds)) kinds[k] += r.kinds[k] || 0
-        for (const k of r.kept) kept.push(`${path.relative(session.root || process.cwd(), file)}:${k.line ?? '?'} ${k.reason}`)
+        for (const k of r.kept) (k.zod ? zodKept : kept).push(`${path.relative(session.root || process.cwd(), file)}:${k.line ?? '?'} ${k.reason}`)
       }
       session.report.clear()
+      if (zod + zodKept.length > 0) {
+        session.logger?.info?.(`[unplugin-ata] zodResolver: ${zod} of ${zod + zodKept.length} call${zod + zodKept.length === 1 ? '' : 's'} compiled at build time${zodKept.length ? `, ${zodKept.length} left as written with zod` : ', zod is out of those files'}`)
+        for (const line of zodKept) session.logger?.info?.(`[unplugin-ata] left as written: ${line}`)
+      }
       if (replaced === 0 && kept.length === 0) return
       // What each compiled validator carries, so a reader can tell whether the
       // bundle holds an error pipeline and for which calls.

@@ -41,7 +41,15 @@ export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '
 const RT = zodRuntime(null, null, null)
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER
-export class ZodRefused extends Error {}
+// What a refusal says for the kinds of schema that are not carried.
+const KINDS = {
+  array: 'an array is not carried yet', union: 'a union is not carried yet', nullable: 'nullable() is not carried yet', default: 'default() is not carried yet',
+  pipe: 'a transform or a pipe is not carried', transform: 'a transform is not carried', custom: 'refine() is not carried', date: 'a date is not carried',
+  any: 'any() is not carried', unknown: 'unknown() is not carried', record: 'a record is not carried', tuple: 'a tuple is not carried', lazy: 'lazy() is not carried',
+  intersection: 'an intersection is not carried', catch: 'catch() is not carried', readonly: 'readonly() is not carried', file: 'a file is not carried', bigint: 'a bigint is not carried',
+  null: 'null() is not carried', undefined: 'undefined() is not carried', nonoptional: 'nonoptional() is not carried', template_literal: 'a template literal is not carried',
+}
+export class ZodRefused extends Error { get name () { return 'ZodRefused' } }
 const no = (why) => { throw new ZodRefused(why) }
 const esc = (k) => k.replace(/~/g, '~0').replace(/\//g, '~1')
 
@@ -62,7 +70,14 @@ export function planZod (schema) {
   const paths = {}      // instancePath -> { o: order, u: [code, message] when undefined }
   let order = 0
   let rewrites = false
+  // A refusal names the field it is about, as the form names it.
   const walk = (node, sp, ip) => {
+    try { return walkNode(node, sp, ip) } catch (e) {
+      if (e instanceof ZodRefused && e.field === undefined) { e.field = ip; e.message = `${ip ? ip.slice(1).split('/').map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~')).join('.') : 'the schema'}: ${e.message}` }
+      throw e
+    }
+  }
+  const walkNode = (node, sp, ip) => {
     let def = node._zod.def
     let optional = false
     if (def.type === 'optional') { optional = true; node = def.innerType; def = node._zod.def }
@@ -99,7 +114,7 @@ export function planZod (schema) {
       // z.email() and the like: the format is the schema itself and is
       // checked before its checks.
       if (def.check === 'string_format') {
-        if (!(def.pattern instanceof RegExp) || (def.pattern.flags !== '' && def.pattern.flags !== 'u')) no(`string format ${def.format}`)
+        if (!(def.pattern instanceof RegExp) || (def.pattern.flags !== '' && def.pattern.flags !== 'u')) no(`${def.format}() is not carried (zod does not check it with a pattern)`)
         const bad = ['', ' ', '\u0000', 'x', '@', '0'].find((v) => !def.pattern.test(v))
         if (bad === undefined) no('a pattern no probe breaks')
         put('pattern', def.pattern.source, [-0.5, ...one(node, bad, (i) => i.code === 'invalid_format' && i.format === def.format, 'format')])
@@ -121,7 +136,7 @@ export function planZod (schema) {
           const bad = ['', ' ', '\u0000', 'x', '@', '0'].find((s) => !d.pattern.test(s))
           if (bad === undefined) no('a pattern no probe breaks')
           put('pattern', d.pattern.source, [rank, ...one(node, bad, (i) => i.code === 'invalid_format' && i.format === d.format, 'format')])
-        } else no(`string check ${d.check}${d.format ? ' ' + d.format : ''}`)
+        } else no(d.check === 'string_format' ? `${d.format}() is not carried (zod does not check it with a pattern)` : d.check === 'custom' ? 'refine() is not carried' : `the string check ${d.check} is not carried`)
       })
     } else if (def.type === 'number') {
       const fmt = checks.filter((c) => c._zod.def.check === 'number_format')
@@ -137,7 +152,7 @@ export function planZod (schema) {
           put('minimum', -MAX_SAFE, [rank, ...one(node, -(2 ** 60), (i) => i.code === 'too_small' && i.minimum === -MAX_SAFE, 'int lower')])
         } else if (d.check === 'greater_than' && typeof d.value === 'number') put(d.inclusive ? 'minimum' : 'exclusiveMinimum', d.value, [rank, ...one(node, d.value - 1, (i) => i.code === 'too_small' && i.minimum === d.value, 'min')])
         else if (d.check === 'less_than' && typeof d.value === 'number') put(d.inclusive ? 'maximum' : 'exclusiveMaximum', d.value, [rank, ...one(node, d.value + 1, (i) => i.code === 'too_big' && i.maximum === d.value, 'max')])
-        else no(`number check ${d.check}`)
+        else no(d.check === 'custom' ? 'refine() is not carried' : `the number check ${d.check} is not carried`)
       })
     } else if (def.type === 'boolean') {
       if (checks.length) no('a check on a boolean')
@@ -151,7 +166,8 @@ export function planZod (schema) {
       if (!probes.every((i) => i.length === 1 && i[0].code === probes[0][0].code && i[0].message === probes[0][0].message)) no('an enum message that depends on the value')
       table[`${sp}/enum`] = [0, probes[0][0].code, probes[0][0].message]
     } else if (def.type === 'object') {
-      if (checks.length || def.catchall) no('an object with checks or a catchall')
+      if (def.catchall) no('a strict, loose or catchall object is not carried')
+      if (checks.length) no(checks.some((c) => c._zod.def.check === 'custom') ? 'refine() on an object is not carried' : 'a check on an object is not carried')
       out.type = 'object'; table[`${sp}/type`] = { t: typeEntry(node, 'object', [null, 'a', 1, true]) }
       out.properties = {}; const required = []; here.k = Object.keys(def.shape)
       for (const k of here.k) {
@@ -161,10 +177,10 @@ export function planZod (schema) {
         out.properties[k] = walk(child, `${sp}/properties/${esc(k)}`, `${ip}/${esc(k)}`)
       }
       if (required.length) out.required = required
-    } else no(`a ${def.type}`)
+    } else no(KINDS[def.type] || `${def.type} is not carried`)
     return out
   }
-  if (schema._zod.def.type !== 'object') no('a root that is not an object')
+  if (schema._zod.def.type !== 'object') no(schema._zod.def.type === 'pipe' ? 'the schema is a transform or a pipe, which is not carried' : 'the schema is not an object')
   const json = walk(schema, '#', '')
   return { json, table, paths, rewrites }
 }
@@ -304,17 +320,18 @@ export function readZodModule (file, parse) {
 // function of zod's local name, with the constants it is made of before it;
 // null where it names anything else (a value from outside, a function, a
 // TypeScript expression): then it cannot be built outside the file.
-export function schemaSource (name, info, code, exportedToo = false) {
+export function schemaSource (name, info, code, exportedToo = false, out = {}) {
   const order = []; const seen = new Set()
+  const fail = (why) => { if (out.why === undefined) out.why = why; return false }
   const readable = (node) => {
     let ok = true
     walk(node, (n, up) => {
       if (!ok) return
-      if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = false; return }
+      if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = fail(/Function/.test(n.type) ? 'the schema has a function in it (a refine, a transform or a message function), which the build does not carry' : n.type.startsWith('TS') ? 'the schema has TypeScript syntax in it (a cast or a type argument)' : `the schema has a ${n.type} in it, which the build does not read`); return }
       // Nothing but zod's own methods by name: no computed member, and none
       // of the names that reach a function constructor.
-      if ((n.type === 'MemberExpression' || n.type === 'OptionalMemberExpression') && (n.computed || /^(?:constructor|prototype|__proto__|call|apply|bind)$/.test(n.property.name))) { ok = false; return }
-      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name) || !visit(n.name)) ok = false }
+      if ((n.type === 'MemberExpression' || n.type === 'OptionalMemberExpression') && (n.computed || /^(?:constructor|prototype|__proto__|call|apply|bind)$/.test(n.property.name))) { ok = fail('the schema reads a member the build does not follow'); return }
+      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name)) ok = fail(`the schema uses \`${n.name}\`, which is not zod or a constant written at the top of the file`); else if (!visit(n.name)) ok = false }
     })
     return ok
   }
@@ -324,7 +341,8 @@ export function schemaSource (name, info, code, exportedToo = false) {
     const c = info.consts.get(nm)
     // In the file of the call an exported constant has readers the build
     // does not see, so it cannot be taken out and is not read.
-    if (!c || (c.exported && !exportedToo)) return false
+    if (!c) return fail(`\`${nm}\` is not a constant written at the top of the file`)
+    if (c.exported && !exportedToo) return fail(`\`${nm}\` is exported, so other files may read it and it cannot leave this one`)
     if (!readable(c.init)) return false
     order.push(nm)
     return true
