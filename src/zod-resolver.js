@@ -26,7 +26,13 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 
 export const ZOD_RESOLVERS = '@hookform/resolvers/zod'
-export const ZOD_RUNTIME = fs.readFileSync(new URL('./zod-resolver-rt.js', import.meta.url), 'utf8').replace(/^\/\/[^\n]*\n/gm, '')
+const RT_TEXT = fs.readFileSync(new URL('./zod-resolver-rt.js', import.meta.url), 'utf8')
+const bare = (text) => text.replace(/^\/\/[^\n]*\n/gm, '')
+export const ZOD_RUNTIME = bare(RT_TEXT)
+// Without the part that rewrites strings, for a file none of whose forms has
+// a trim or a case rewrite: the rest only reaches it through a plan that
+// says so (plan.rewrites).
+export const ZOD_RUNTIME_PLAIN = bare(RT_TEXT.replace(/\/\/<rewrites>\n[\s\S]*?\/\/<\/rewrites>\n/, ''))
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
@@ -55,6 +61,7 @@ export function planZod (schema) {
   const table = {}      // schemaPath -> [rank, code, message] | { type entries }
   const paths = {}      // instancePath -> { o: order, u: [code, message] when undefined }
   let order = 0
+  let rewrites = false
   const walk = (node, sp, ip) => {
     let def = node._zod.def
     let optional = false
@@ -87,8 +94,8 @@ export function planZod (schema) {
       kinds.forEach((k, i) => { if (k === 'w' && any && i > firstCheck && i < lastCheck) no('a rewrite between two checks') })
       const pre = []; const post = []
       checks.forEach((c, i) => { if (kinds[i] === 'w') (!any || (!head && i < firstCheck) ? pre : post).push(opOf(c._zod.def)) })
-      if (pre.length) { here.w = pre; paths[''].p = 1 }
-      if (post.length) here.x = post
+      if (pre.length) { here.w = pre; paths[''].p = 1; rewrites = true }
+      if (post.length) { here.x = post; rewrites = true }
       // z.email() and the like: the format is the schema itself and is
       // checked before its checks.
       if (def.check === 'string_format') {
@@ -159,7 +166,7 @@ export function planZod (schema) {
   }
   if (schema._zod.def.type !== 'object') no('a root that is not an object')
   const json = walk(schema, '#', '')
-  return { json, table, paths }
+  return { json, table, paths, rewrites }
 }
 
 // The zod a file imports, as that file resolves it: the value its local name
