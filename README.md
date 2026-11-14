@@ -407,8 +407,8 @@ dropped.
 
 Measured on a Next.js 16.4.6 page with a five-field form (react-hook-form
 7.92.0, @hookform/resolvers 7.0.6, zod 4.6.7), the scripts the page loads
-beyond the home page, gzipped: 43.5 KB as written and 15.0 KB through the
-plugin under Turbopack, 37.3 KB and 15.6 KB under webpack. react-hook-form
+beyond the home page, gzipped: 43.5 KB as written and 15.3 KB through the
+plugin under Turbopack, 37.3 KB and 15.8 KB under webpack. react-hook-form
 alone is 12.3 KB.
 
 The schema can be a constant of the file, built from zod and other constants
@@ -428,13 +428,14 @@ resolver to the package's `zodResolver` on generated forms.
 
 Carried: an object of strings (`min`, `max`, `length`, `email`, `regex`,
 `uuid` and the other formats zod checks with a pattern, written as a check or
-as the schema itself, `z.email()`; `trim`, `toLowerCase` and `toUpperCase`
+as the schema itself, `z.email()`; several `regex` checks on one field; `trim`, `toLowerCase` and `toUpperCase`
 written before the checks or after them), numbers (`int`,
-`min`, `max`, `gt`, `lt`, `positive`), booleans, enums, literals, optional
-fields and nested objects, with zod 4. Not carried, so the call stays as
-written and zod stays on that page: arrays, unions, `nullable`, `url`,
-`refine`, `transform`, `default`, `coerce`, a rewrite such as `trim` between
-two checks, strict objects, a schema
+`min`, `max`, `gt`, `lt`, `positive`, and `z.coerce.number()`), booleans, enums, literals, optional
+fields, nested objects and arrays of any of these (`min`, `max`, `length`,
+`nonempty`), with zod 4. Not carried, so the call stays as
+written and zod stays on that page: unions, `nullable`, `url`,
+`refine`, `transform`, `default`, `coerce` on anything but a number, a
+rewrite such as `trim` between two checks, strict objects, a schema
 exported from the file of the call or used elsewhere in it as a value, a schema built from anything but zod and constants of the file,
 and a call that passes options. An application that changes zod's messages
 as a whole (`z.config(...)`, a locale, a global error map) gets no call

@@ -19,7 +19,7 @@
 // formats zod checks with a pattern, as a check or as the schema itself; trim,
 // toLowerCase and toUpperCase before the checks or after them), numbers (int, min, max, gt, lt,
 // positive and the like), booleans, enums, literals, optional fields and
-// nested objects. Refused: arrays, unions, nullable, url, refine, transform,
+// nested objects, and arrays of these. Refused: unions, nullable, url, refine, transform,
 // default, coerce, a rewrite between two checks, strict and passthrough
 // objects, zod 3.
 import fs from 'node:fs'
@@ -43,7 +43,7 @@ const RT = zodRuntime(null, null, null)
 const MAX_SAFE = Number.MAX_SAFE_INTEGER
 // What a refusal says for the kinds of schema that are not carried.
 const KINDS = {
-  array: 'an array is not carried yet', union: 'a union is not carried yet', nullable: 'nullable() is not carried yet', default: 'default() is not carried yet',
+  union: 'a union is not carried yet', nullable: 'nullable() is not carried yet', default: 'default() is not carried yet',
   pipe: 'a transform or a pipe is not carried', transform: 'a transform is not carried', custom: 'refine() is not carried', date: 'a date is not carried',
   any: 'any() is not carried', unknown: 'unknown() is not carried', record: 'a record is not carried', tuple: 'a tuple is not carried', lazy: 'lazy() is not carried',
   intersection: 'an intersection is not carried', catch: 'catch() is not carried', readonly: 'readonly() is not carried', file: 'a file is not carried', bigint: 'a bigint is not carried',
@@ -54,14 +54,14 @@ const no = (why) => { throw new ZodRefused(why) }
 const esc = (k) => k.replace(/~/g, '~0').replace(/\//g, '~1')
 
 const issuesOf = (node, v) => { const r = node.safeParse(v); return r.success ? [] : r.error.issues }
-const one = (node, v, pick, what) => { const hit = issuesOf(node, v).filter(pick); if (hit.length !== 1) no(`${what}: zod reported ${hit.length} matching issues for the probe`); return [hit[0].code, hit[0].message] }
+const one = (node, v, pick, what) => { const hit = issuesOf(node, v).filter((i) => i.path.length === 0 && pick(i)); if (hit.length !== 1) no(hit.length ? 'two checks of one kind on this field, which the build cannot tell apart' : `zod did not report the ${what} check the build asked about`); return [hit[0].code, hit[0].message] }
 
 // The type rule of a leaf: a custom message is one zod gives whatever came.
 const DEFAULT_TYPE = /^Invalid input: expected (\w+), received /
 function typeEntry (node, expected, probes) {
-  const msgs = probes.map((p) => { const i = issuesOf(node, p).filter((x) => x.code === 'invalid_type' && x.expected === expected); if (i.length !== 1) no(`type of ${expected}: no single invalid_type issue`); return i[0].message })
+  const msgs = probes.map((p) => { const i = issuesOf(node, p).filter((x) => x.code === 'invalid_type' && x.expected === expected); if (i.length !== 1) no(`zod did not report a wrong type for a ${expected} the way the build expects`); return i[0].message })
   if (msgs.every((m) => m === msgs[0]) && !DEFAULT_TYPE.test(msgs[0])) return { m: msgs[0] }
-  if (!msgs.every((m) => { const d = DEFAULT_TYPE.exec(m); return d && d[1] === expected })) no(`type of ${expected}: a message that depends on the value`)
+  if (!msgs.every((m) => { const d = DEFAULT_TYPE.exec(m); return d && d[1] === expected })) no('the wrong-type message is a function of the value, which the build cannot carry')
   return { x: expected }
 }
 
@@ -82,7 +82,8 @@ export function planZod (schema) {
     let optional = false
     if (def.type === 'optional') { optional = true; node = def.innerType; def = node._zod.def }
     const here = paths[ip] = { o: order++ }
-    if (!optional) { const u = issuesOf(node, undefined); if (u.length !== 1) no(`${ip}: ${u.length} issues for a missing value`); here.u = [u[0].code, u[0].message] }
+    if (!optional) { const u = issuesOf(node, undefined); if (u.length !== 1) no(u.length === 0 ? 'a field that takes a missing value without being optional (any, unknown, a default) is not carried' : 'zod reports more than one thing for a missing value here'); here.u = [u[0].code, u[0].message] }
+    else here.q = 1
     const out = {}
     const dup = new Set()
     const put = (kw, value, entry) => {
@@ -91,6 +92,7 @@ export function planZod (schema) {
     const checks = def.checks || []
     if (def.type === 'string') {
       const len = []
+      if (def.coerce) no('coerce on a string is not carried')
       out.type = 'string'; table[`${sp}/type`] = { t: typeEntry(node, 'string', [null, 1, true, {}]), l: len }
       // zod runs a length check on anything that has a length, a string or
       // not, and words the default message by what it was given.
@@ -133,16 +135,20 @@ export function planZod (schema) {
           if (d.length >= 1) put('minLength', d.length, [rank, ...one(node, 'a'.repeat(d.length - 1), (i) => i.code === 'too_small' && i.exact === true, 'length')])
           put('maxLength', d.length, [rank, ...one(node, 'a'.repeat(d.length + 1), (i) => i.code === 'too_big' && i.exact === true, 'length')])
         } else if (d.check === 'string_format' && d.pattern instanceof RegExp && (d.pattern.flags === '' || d.pattern.flags === 'u')) {
-          const bad = ['', ' ', '\u0000', 'x', '@', '0'].find((s) => !d.pattern.test(s))
+          const bad = ['', ' ', '\u0000', 'x', '@', '0', 'A', '~', 'a b'].find((s) => !d.pattern.test(s))
           if (bad === undefined) no('a pattern no probe breaks')
-          put('pattern', d.pattern.source, [rank, ...one(node, bad, (i) => i.code === 'invalid_format' && i.format === d.format, 'format')])
+          put('pattern', d.pattern.source, [rank, ...one(node, bad, (i) => i.code === 'invalid_format' && i.format === d.format && (i.pattern === undefined || i.pattern === String(d.pattern)), 'format')])
         } else no(d.check === 'string_format' ? `${d.format}() is not carried (zod does not check it with a pattern)` : d.check === 'custom' ? 'refine() is not carried' : `the string check ${d.check} is not carried`)
       })
     } else if (def.type === 'number') {
       const fmt = checks.filter((c) => c._zod.def.check === 'number_format')
       if (fmt.length > 1 || (fmt.length === 1 && fmt[0]._zod.def.format !== 'safeint')) no('a number format other than int')
       out.type = fmt.length ? 'integer' : 'number'
-      const t = { t: typeEntry(node, 'number', [null, 'a', true, {}]) }
+      // z.coerce.number(): zod takes Number(value) first, of whatever came,
+      // so the only wrong type left is NaN. The same is done to a copy of the
+      // document before the check.
+      if (def.coerce) { here.w = [3]; paths[''].p = 1; rewrites = true }
+      const t = { t: typeEntry(node, 'number', def.coerce ? ['a', {}, 'x y'] : [null, 'a', true, {}]) }
       if (fmt.length) t.i = [checks.indexOf(fmt[0]), ...one(node, 0.5, (i) => i.code === 'invalid_type' && i.expected === 'int', 'int')]
       table[`${sp}/type`] = t
       checks.forEach((c, rank) => {
@@ -156,6 +162,7 @@ export function planZod (schema) {
       })
     } else if (def.type === 'boolean') {
       if (checks.length) no('a check on a boolean')
+      if (def.coerce) no('coerce on a boolean is not carried')
       out.type = 'boolean'; table[`${sp}/type`] = { t: typeEntry(node, 'boolean', [null, 'a', 1, {}]) }
     } else if (def.type === 'enum' || def.type === 'literal') {
       if (checks.length) no('a check on an enum')
@@ -165,6 +172,27 @@ export function planZod (schema) {
       const probes = [null, '\u0000 not a member', -0.123456789, {}].map((p) => issuesOf(node, p))
       if (!probes.every((i) => i.length === 1 && i[0].code === probes[0][0].code && i[0].message === probes[0][0].message)) no('an enum message that depends on the value')
       table[`${sp}/enum`] = [0, probes[0][0].code, probes[0][0].message]
+    } else if (def.type === 'array') {
+      const el = def.element
+      if (el._zod.def.type === 'optional') no('an array of optional items is not carried')
+      out.type = 'array'; here.a = 1
+      const len = []
+      table[`${sp}/type`] = { t: typeEntry(node, 'array', [null, 1, true, {}]), l: len, s: 1 }
+      // A length check also runs on a string or anything else with a length.
+      const origins = (n, pick, what) => [one(node, 'a'.repeat(n), pick, what), one(node, { length: n }, pick, what)].map((x) => x[1])
+      const filled = (n) => new Array(n).fill(null)
+      checks.forEach((c, rank) => {
+        const d = c._zod.def
+        const n = d.check === 'min_length' ? d.minimum : d.check === 'max_length' ? d.maximum : d.check === 'length_equals' ? d.length : no(d.check === 'custom' ? 'refine() on an array is not carried' : `the array check ${d.check} is not carried`)
+        if (n > 10000) no('a very long array bound')
+        const small = (i) => i.code === 'too_small' && (d.check === 'length_equals' ? i.exact === true : i.minimum === n)
+        const big = (i) => i.code === 'too_big' && (d.check === 'length_equals' ? i.exact === true : i.maximum === n)
+        if (d.check !== 'max_length' && n >= 1) { len.push([0, n, rank, 'too_small', ...origins(n - 1, small, 'min')]); put('minItems', n, [rank, ...one(node, filled(n - 1), small, 'min'), 1]) }
+        // Longer than a maximum: zod reports that and does not read the items.
+        if (d.check !== 'min_length') { len.push([1, n, rank, 'too_big', ...origins(n + 1, big, 'max')]); put('maxItems', n, [rank, ...one(node, filled(n + 1), big, 'max'), 2]) }
+      })
+      if (out.allOf) no('two length checks of one kind on an array')
+      out.items = walk(el, `${sp}/items`, `${ip}/*`)
     } else if (def.type === 'object') {
       if (def.catchall) no('a strict, loose or catchall object is not carried')
       if (checks.length) no(checks.some((c) => c._zod.def.check === 'custom') ? 'refine() on an object is not carried' : 'a check on an object is not carried')
@@ -196,7 +224,7 @@ export function zodFor (file, source, kind) {
 }
 
 // A value of each kind a form can hand a field, and values that pass a leaf.
-const POOL = [undefined, null, '', ' ', 'a', 'ab', 'abc', '  ab ', ' A@B.CO ', 'ABC', 'Stra\u00dfe', 'abcdefghijklmnopqrstuvwxyz0123456789', 'a@b.co', 'A1b2c3d4', '12345', '123e4567-e89b-42d3-a456-426614174000', 0, 1, -1, 0.5, 17, 18, 100, 1e9, 2 ** 60, NaN, Infinity, true, false, [], ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], {}, { length: 1 }, { length: 99 }, new Date(0)]
+const POOL = [undefined, null, '', ' ', 'a', 'ab', 'abc', '@ab', 'A!1', 'Ab!1x', 'abc123', 'user_name', 'Abcdef1!', 'Passw0rd!', '123456', '1234567890', '42', ' 7 ', '1e3', '2024-01-01', 'https://example.com', '+15555550100', '  ab ', ' A@B.CO ', 'ABC', 'Stra\u00dfe', 'abcdefghijklmnopqrstuvwxyz0123456789', 'a@b.co', 'A1b2c3d4', '12345', '123e4567-e89b-42d3-a456-426614174000', 0, 1, -1, 0.5, 17, 18, 100, 1e9, 2 ** 60, NaN, Infinity, true, false, [], ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], {}, { length: 1 }, { length: 99 }, new Date(0)]
 const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefined' : typeof v === 'number' && !Number.isFinite(v) ? '\u0000' + String(v) : v)
 
 // Whether the plan answers as the schema does: zod's issues (path, code,
@@ -205,22 +233,42 @@ const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefin
 // the pool, and on documents with several fields wrong. `validate` is the
 // check compiled from plan.json with plain errors.
 export function selfCheck (schema, plan, validate) {
-  const leaves = []
+  const leaves = []; const arrays = []
+  const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = copyOf(d[k]); return o }
   const good = (node, ip) => {
     let def = node._zod.def; let optional = false
     if (def.type === 'optional') { optional = true; node = def.innerType; def = node._zod.def }
     if (def.type === 'object') { const out = {}; for (const [k, child] of Object.entries(def.shape)) out[k] = good(child, ip.concat(k)); return out }
+    if (def.type === 'array') {
+      // Two items where the bounds allow, the first of them varied below.
+      const bound = (kind) => { const c = (def.checks || []).map((x) => x._zod.def).find((d) => d.check === kind || d.check === 'length_equals'); return c === undefined ? undefined : c.check === 'length_equals' ? c.length : kind === 'min_length' ? c.minimum : c.maximum }
+      const min = bound('min_length') || 0; const max = bound('max_length')
+      const n = Math.max(min, Math.min(2, max === undefined ? 2 : max))
+      if (n > 50) throw new ZodRefused('an array that needs many items')
+      const item = good(def.element, ip.concat(0))
+      arrays.push({ ip, item, n, min, max })
+      return Array.from({ length: n }, () => copyOf(item))
+    }
     const candidates = def.type === 'enum' ? Object.values(def.entries) : def.type === 'literal' ? def.values : POOL
     const ok = candidates.find((c) => c !== undefined && node.safeParse(c).success)
-    if (ok === undefined && !optional) throw new ZodRefused('no value of the pool passes ' + ip.join('.'))
+    if (ok === undefined && !optional) throw new ZodRefused(`${ip.join('.')}: the build has no sample value that passes this field's rules, so it could not hold the form to zod`)
     leaves.push(ip)
     return ok
   }
   const base = good(schema, [])
-  const copy = (d) => { if (d === null || typeof d !== 'object' || Array.isArray(d) || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = copy(d[k]); return o }
+  const copy = copyOf
   const set = (d, ip, v, drop) => { const o = copy(d); let at = o; for (let i = 0; i < ip.length - 1; i++) at = at[ip[i]]; if (drop) delete at[ip[ip.length - 1]]; else at[ip[ip.length - 1]] = v; return o }
   const docs = [base, {}, { ...copy(base), ['\u0000extra']: 1 }]
   for (const ip of leaves) { docs.push(set(base, ip, undefined, true)); for (const v of POOL) docs.push(set(base, ip, v, false)) }
+  // An array empty, one short of its minimum, one over its maximum, long, and
+  // with an item that is not there.
+  for (const { ip, item, n, min, max } of arrays) {
+    if (ip.some((x) => typeof x === 'number')) continue
+    const of = (k) => Array.from({ length: k }, () => copyOf(item))
+    for (const k of new Set([0, 1, Math.max(0, min - 1), min, n + 1, max === undefined ? 5 : max + 1, max === undefined ? 5 : max])) if (k <= 200) docs.push(set(base, ip, of(k), false))
+    if (n > 0) { const holed = of(n); holed[0] = undefined; docs.push(set(base, ip, holed, false)) }
+    for (const v of POOL) docs.push(set(base, ip, v, false))
+  }
   // Parents of leaves, wrong as a whole.
   const parents = new Set(leaves.filter((ip) => ip.length > 1).map((ip) => JSON.stringify(ip.slice(0, -1))))
   for (const p of parents) for (const v of [undefined, null, 'a', 1, [], {}]) docs.push(set(base, JSON.parse(p), v, false))
