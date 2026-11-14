@@ -237,6 +237,7 @@ Other sources (`.json` without the `.schema` suffix, `.js`, `.ts`) produce
 | `report` | `true` | At the end of the build, log how many validators were compiled away and every `new Validator(...)` kept on the runtime, with file, line and reason. See [the report](#the-report-what-stayed-on-the-runtime-and-why). |
 | `standardConsumers` | `[]` | Packages, besides the ones the build knows, whose imported functions take a validator and read only its `~standard`; a validator handed only to those takes the Standard-only wrapper. See below. |
 | `ir` | `true` | Compile validators that are only called with `ata-validator/ir`, a smaller module with the same results; `false` keeps the larger one. See below. |
+| `zodResolver` | `true` | Compile `zodResolver(schema)` from `@hookform/resolvers/zod` away where the schema is written in the file from parts the build carries, so zod leaves that page. See [react-hook-form with zod](#react-hook-form-with-zod-zodresolverschema). |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what the replaceable calls a page loads together would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
 ## compileAway: keep `new Validator`, drop the compiler
@@ -348,6 +349,63 @@ have no compiled form and keep the runtime.
 Until it is, the call stays as written and the form keeps working as before;
 once a release that has it is installed, the next build replaces the call
 without any change to the app.
+
+### react-hook-form with zod: `zodResolver(schema)`
+
+A form that validates with zod can keep its schema and its call and still ship
+without zod:
+
+```tsx
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
+
+const formSchema = z.object({
+  username: z.string().min(2, { message: 'Username must be at least 2 characters.' }).max(30),
+  email: z.string().email('Please enter a valid email.'),
+  age: z.number().int().min(18).optional(),
+  role: z.enum(['admin', 'user']),
+})
+type FormValues = z.infer<typeof formSchema>
+
+const form = useForm<FormValues>({ resolver: zodResolver(formSchema) })
+```
+
+The build runs the schema with the application's own zod, writes a check that
+gives the same verdict, and records for each rule the issue zod reports when
+it is broken, its code and its message, a custom message included, by handing
+zod a value that breaks that rule. The page gets the compiled check and those
+tables; the schema constant and the zod import leave the file, and a type
+inferred from the schema stays as it was. The resolver answers as
+`zodResolver` does: the same field errors with the same messages and types
+under both criteria modes, and on success the data zod returns, unknown keys
+dropped.
+
+Measured on a Next.js 16.4.6 page with a five-field form (react-hook-form
+7.92.0, @hookform/resolvers 7.0.6, zod 4.6.7), the scripts the page loads
+beyond the home page, gzipped: 43.5 KB as written and 15.0 KB through the
+plugin under Turbopack, 37.3 KB and 15.6 KB under webpack. react-hook-form
+alone is 12.3 KB.
+
+Nothing is replaced on trust. Before a call is replaced, the build runs the
+written check beside the real schema on documents made for that form (each
+field missing, and holding each of some thirty values, and several fields
+wrong at once) and compares zod's issues and returned data; a form that
+differs keeps its call. `test/zod-resolver.test.js` holds the written
+resolver to the package's `zodResolver` on generated forms.
+
+Carried: an object of strings (`min`, `max`, `length`, `email`, `regex`,
+`uuid` and the other formats zod checks with a pattern), numbers (`int`,
+`min`, `max`, `gt`, `lt`, `positive`), booleans, enums, literals, optional
+fields and nested objects, with zod 4. Not carried, so the call stays as
+written and zod stays on that page: arrays, unions, `nullable`, `url`,
+`refine`, `transform`, `default`, `coerce`, `trim`, strict objects, a schema
+imported from another module, a schema exported or used elsewhere in the file
+as a value, a schema built from anything but zod and constants of the file,
+and a call that passes options. An application that changes zod's messages
+as a whole (`z.config(...)`, a locale, a global error map) gets no call
+replaced, since the build would learn messages the page does not show.
+`zodResolver: false` turns the rewrite off.
 
 ### rjsf: `<Form schema={schema} validator={validator} />`
 

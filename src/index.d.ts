@@ -62,6 +62,14 @@ export interface Options {
    */
   table?: boolean | 'auto'
   /**
+   * `zodResolver(schema)` from @hookform/resolvers/zod is compiled away where
+   * the schema is written in the file from parts the build carries, and zod
+   * leaves that page's bundle; the written resolver is held to zod at build
+   * time before the call is replaced. `false` leaves every such call as
+   * written. Default true.
+   */
+  zodResolver?: boolean
+  /**
    * OpenAPI documents (3.0 or 3.1; JSON, or YAML with the `yaml` package) to
    * write request body validators for: `openapi.json` gives
    * `openapi.validators.mjs` and `.d.mts` beside it, one `<operation>Body`
