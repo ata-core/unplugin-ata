@@ -273,6 +273,14 @@ async function loadAta() {
     let has = resolverCopies.get(entry)
     if (has === undefined) {
       has = resolverExportsAll(entry, 'ataCompiledResolver')
+      // The resolvers do not carry a compiled resolver (their pull request
+      // for it was declined), so the build writes its own into the file, from
+      // what the runtime resolver itself is made of: `toNestErrors` and
+      // `validateFieldsNatively` of @hookform/resolvers and `appendErrors` of
+      // react-hook-form, where the file resolves both.
+      if (!has) {
+        try { const req = createRequire(file); req.resolve('@hookform/resolvers'); req.resolve('react-hook-form'); has = 'own' } catch { has = false }
+      }
       resolverCopies.set(entry, has)
     }
     return has

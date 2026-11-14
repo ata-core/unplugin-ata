@@ -318,8 +318,8 @@ otherwise:
 ### react-hook-form: `ataResolver(schema)`
 
 `ataResolver(schema)` from `@hookform/resolvers/ata-validator` is compiled away
-the same way: the plugin writes `ataCompiledResolver(module)` in its place, and
-the runtime leaves the bundle. A form written the usual way,
+the same way: the build writes a compiled resolver in its place, and the
+runtime leaves the bundle. A form written the usual way,
 
 ```tsx
 import { useForm } from 'react-hook-form'
@@ -329,25 +329,32 @@ import schema from './signup.json'
 const form = useForm({ resolver: ataResolver(schema) })
 ```
 
-adds 4.1 KB gzipped to react-hook-form for an eight-field signup form, against
-135.4 KB without the plugin, in a minified esbuild build without code
-splitting (ata-validator 1.57.0). The module fills defaults with its
-`applyDefaults` and returns its errors in the runtime's order, so the
-resolver's answer, values and field errors, is the one `ataResolver` gives.
+needs no change. Measured on a Next.js 16.4.6 page with a four-field form
+(react-hook-form 7.92.0, @hookform/resolvers 7.0.6), the scripts the page
+loads beyond the home page, gzipped, under Turbopack and under webpack:
+
+| the page's resolver | Turbopack | webpack |
+|---|---|---|
+| none, react-hook-form alone | 12.3 KB | 12.5 KB |
+| `ataResolver`, compiled by the build | 15.8 KB | 16.3 KB |
+| `zodResolver` with zod 4.6.7 | 43.3 KB | 37.1 KB |
+| `ataResolver` left on the runtime | 81.7 KB | 73.3 KB |
+
+The compiled resolver is `ataResolver` with the Validator taken out. The
+installed `@hookform/resolvers` does not carry one, so the build writes it
+into the file: the same field errors from the same error list (a field's
+first error, or every one under `criteriaMode: 'all'`), through the package's
+own `toNestErrors`, with defaults filled as the Validator fills them. A test
+holds it to the package's `ataResolver` on the same documents. Where a
+release of `@hookform/resolvers` exports `ataCompiledResolver`, that one is
+used instead.
 
 The schema is read as above, and the call is replaced only when it passes no
 validator options (or `undefined` or `{}` for them, with a literal
 `{ raw: true }` or `{ raw: false }` for the resolver's own options), when the
-installed `@hookform/resolvers` exports `ataCompiledResolver` from every file
-its export map gives for `./ata-validator`, and when ata-validator writes
-modules in the runtime's error order (1.57.0). Options such as `coerceTypes`
-have no compiled form and keep the runtime.
-
-`ataCompiledResolver` is not in a released `@hookform/resolvers` yet
-([react-hook-form/resolvers#881](https://github.com/react-hook-form/resolvers/pull/881)).
-Until it is, the call stays as written and the form keeps working as before;
-once a release that has it is installed, the next build replaces the call
-without any change to the app.
+file resolves `@hookform/resolvers` and `react-hook-form`, and when
+ata-validator writes modules in the runtime's error order (1.57.0). Options
+such as `coerceTypes` have no compiled form and keep the runtime.
 
 ### rjsf: `<Form schema={schema} validator={validator} />`
 

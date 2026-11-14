@@ -721,6 +721,18 @@ const RESOLVERS = '@hookform/resolvers/ata-validator'
 // rjsf's form packages: core and the themes.
 const RJSF_FORMS = /^@rjsf\/(core|mui|antd|chakra-ui|fluentui-rc|semantic-ui|daisyui|shadcn|primereact|react-bootstrap|mantine)$/
 
+// The compiled resolver, written into a file whose @hookform/resolvers has
+// none. It is ataResolver of @hookform/resolvers/ata-validator with the
+// Validator taken out: the same field errors from the same error list (the
+// first error of a field, every one under criteriaMode 'all', a missing
+// property reported at the property), through the resolvers' own
+// toNestErrors, and defaults filled first as the Validator fills them.
+const OWN_RESOLVER = `import { toNestErrors as __ataNest, validateFieldsNatively as __ataNative } from '@hookform/resolvers';
+import { appendErrors as __ataAppend } from 'react-hook-form';
+const __ataFieldErrors = (errs, all) => { const out = Object.create(null); for (let i = 0; i < errs.length; i += 1) { const e = errs[i]; const p = (e.keyword === 'required' ? e.instancePath + '/' + e.params.missingProperty : e.instancePath).substring(1).replace(/\\//g, '.'); if (!out[p]) out[p] = { message: e.message, type: e.keyword }; if (all) { const t = out[p].types; const m = t && t[e.keyword]; out[p] = __ataAppend(p, all, out, e.keyword, m ? [].concat(m, e.message || '') : e.message) } } return out };
+const __ataCompiledResolver = (c, ro = {}) => async (values, _, o) => { if (c.applyDefaults) c.applyDefaults(values); const r = c.validate(values); o.shouldUseNativeValidation && __ataNative({}, o); return r.valid ? { values: ro.raw ? Object.assign({}, values) : values, errors: {} } : { values: {}, errors: __ataNest(__ataFieldErrors(r.errors, !o.shouldUseNativeValidation && o.criteriaMode === 'all'), o) } };
+`
+
 // The resolver's options as source for ataCompiledResolver's second argument:
 // '' for none, the literal's text for `{ raw: <boolean> }`, NOT_STATIC for
 // anything else, which keeps the call on the runtime.
@@ -825,7 +837,8 @@ export function compileAway(code, id, ata, options) {
   }
   let resolverName = null
   let resolverImport = null
-  if (ata.compiledResolver && ata.compiledResolver(id)) {
+  const resolverKind = ata.compiledResolver ? ata.compiledResolver(id) : false
+  if (resolverKind) {
     for (const stmt of ast.program.body) {
       if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== RESOLVERS || stmt.importKind === 'type') continue
       for (const sp of stmt.specifiers) {
@@ -1216,7 +1229,7 @@ export function compileAway(code, id, ata, options) {
   // only the replaced call used, and the builder with it, can then leave the
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
-  if (resolverCalls.size) addImport(`import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
+  if (resolverCalls.size) addImport(resolverKind === 'own' ? OWN_RESOLVER : `import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
