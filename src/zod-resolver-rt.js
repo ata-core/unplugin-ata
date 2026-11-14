@@ -13,39 +13,61 @@ const __ataZReceived = (v) => {
 const __ataZSeg = (s) => s.replace(/~1/g, '/').replace(/~0/g, '~')
 const __ataZEsc = (k) => k.replace(/~/g, '~0').replace(/\//g, '~1')
 const __ataZAt = (root, ip) => { let v = root; if (ip) for (const seg of ip.slice(1).split('/')) v = v == null ? undefined : v[__ataZSeg(seg)]; return v }
-// What zod hands back: the declared keys, a key present with undefined kept.
-const __ataZStrip = (P, ip, v) => { const k = P[ip].k; if (!k) return P[ip].x && typeof v === 'string' ? __ataZOps(P[ip].x, v) : v; const out = {}; for (const key of k) if (key in v) { const c = v[key]; out[key] = c === undefined ? c : __ataZStrip(P, ip + '/' + __ataZEsc(key), c) } return out }
+// A place in the tables is a path with `*` for an item of an array: the
+// pattern of an instance path, and its place in zod's order (the order of
+// each field on the way down, an item by its index).
+const __ataZPat = (P, ip) => { let pat = ''; if (ip) for (const seg of ip.slice(1).split('/')) pat += P[pat].a ? '/*' : '/' + seg; return pat }
+const __ataZKey = (P, ip) => { const key = []; let pat = ''; if (ip) for (const seg of ip.slice(1).split('/')) { if (P[pat].a) { key.push(+seg); pat += '/*' } else { pat += '/' + seg; key.push(P[pat].o) } } return key }
+// What zod hands back: the declared keys, a key present with undefined kept,
+// an array item by item.
+const __ataZStrip = (P, pat, v) => {
+  const n = P[pat]
+  if (n.a) return Array.isArray(v) ? Array.from(v, (x) => __ataZStrip(P, pat + '/*', x)) : v
+  if (!n.k) return n.x && typeof v === 'string' ? __ataZOps(n.x, v) : v
+  const out = {}
+  for (const key of n.k) if (key in v) { const c = v[key]; out[key] = c === undefined ? c : __ataZStrip(P, pat + '/' + __ataZEsc(key), c) }
+  return out
+}
 //<rewrites>
-const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : v.toUpperCase(); return v }
-// A string zod rewrites before it checks it (trim, toLowerCase, toUpperCase)
-// is rewritten in a copy of the document, which is what the check then reads.
-const __ataZPrep = (P, ip, v) => {
-  const n = P[ip]
-  if (!n.k) return n.w && typeof v === 'string' ? __ataZOps(n.w, v) : v
+const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : op === 2 ? v.toUpperCase() : Number(v); return v }
+// A value zod rewrites before it checks it (trim, toLowerCase, toUpperCase,
+// a coercion to a number) is rewritten in a copy of the document, which is
+// what the check then reads.
+const __ataZPrep = (P, pat, v) => {
+  const n = P[pat]
+  if (n.a) return Array.isArray(v) ? Array.from(v, (x) => __ataZPrep(P, pat + '/*', x)) : v
+  // A coercion (3) takes whatever came, except nothing where nothing is allowed.
+  if (!n.k) return n.w && (n.w[0] === 3 ? !(n.q && v === undefined) : typeof v === 'string') ? __ataZOps(n.w, v) : v
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return v
   const out = Object.assign({}, v)
-  for (const key of n.k) if (key in v) out[key] = __ataZPrep(P, ip + '/' + __ataZEsc(key), v[key])
+  for (const key of n.k) if (key in v) out[key] = __ataZPrep(P, pat + '/' + __ataZEsc(key), v[key])
   return out
 }
 //</rewrites>
 // zod's issues for a rejected document, in zod's order: [instancePath, code, message].
 const __ataZIssues = (errors, T, P, values) => {
-  const issues = []
+  const issues = []; const capped = []
   for (const e of errors) {
-    if (e.keyword === 'required') { const ip = e.instancePath + '/' + __ataZEsc(e.params.missingProperty); const u = P[ip].u; issues.push([P[ip].o, -1, ip, u[0], u[1], 1]); continue }
-    const entry = T[e.schemaPath]; const o = P[e.instancePath].o
-    if (Array.isArray(entry)) { issues.push([o, entry[0], e.instancePath, entry[1], entry[2], 0]); continue }
-    const v = __ataZAt(values, e.instancePath)
+    if (e.keyword === 'required') { const ip = e.instancePath + '/' + __ataZEsc(e.params.missingProperty); const u = P[__ataZPat(P, ip)].u; issues.push([__ataZKey(P, ip), -1, ip, u[0], u[1], 1]); continue }
+    const entry = T[e.schemaPath]; const ip = e.instancePath; const key = __ataZKey(P, ip)
+    if (Array.isArray(entry)) {
+      // A check of an array itself comes after its items; one that caps its
+      // length is the only thing zod says about an array longer than that.
+      if (entry[3]) { key.push(Infinity); if (entry[3] === 2) capped.push(ip + '/') }
+      issues.push([key, entry[0], ip, entry[1], entry[2], 0]); continue
+    }
+    const v = __ataZAt(values, ip)
     // A number that is not whole: the int check's issue at its place among
     // the checks, and nothing after it.
-    if (entry.i && typeof v === 'number' && Number.isFinite(v)) { issues.push([o, entry.i[0], e.instancePath, entry.i[1], entry.i[2], 1]); continue }
-    issues.push([o, -1, e.instancePath, 'invalid_type', entry.t.m !== undefined ? entry.t.m : 'Invalid input: expected ' + entry.t.x + ', received ' + __ataZReceived(v), 1])
-    // The wrong type stops the checks, except those on a length.
-    if (entry.l && v != null && v.length !== undefined) for (const c of entry.l) if (c[0] ? v.length > c[1] : v.length < c[1]) issues.push([o, c[2], e.instancePath, c[3], Array.isArray(v) ? c[4] : c[5], 2])
+    if (entry.i && typeof v === 'number' && Number.isFinite(v)) { issues.push([key, entry.i[0], ip, entry.i[1], entry.i[2], 1]); continue }
+    issues.push([key, -1, ip, 'invalid_type', entry.t.m !== undefined ? entry.t.m : 'Invalid input: expected ' + entry.t.x + ', received ' + __ataZReceived(v), 1])
+    // The wrong type stops the checks, except those on a length, worded by
+    // what was given: the other kind that has one (c[4]), or anything else.
+    if (entry.l && v != null && v.length !== undefined) for (const c of entry.l) if (c[0] ? v.length > c[1] : v.length < c[1]) issues.push([key, c[2], ip, c[3], (entry.s ? typeof v === 'string' : Array.isArray(v)) ? c[4] : c[5], 2])
   }
-  issues.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  issues.sort((a, b) => { for (let i = 0; ; i++) { const x = a[0][i]; const y = b[0][i]; if (x === undefined || y === undefined) return (x === undefined ? 0 : 1) - (y === undefined ? 0 : 1) || a[1] - b[1]; if (x !== y) return x - y } })
   const out = []; let stopped = null
-  for (const i of issues) { if (stopped === i[2] && i[5] !== 2) continue; if (i[5] === 1) stopped = i[2]; out.push([i[2], i[3], i[4]]) }
+  for (const i of issues) { if (capped.some((c) => i[2].startsWith(c))) continue; if (stopped === i[2] && i[5] !== 2) continue; if (i[5] === 1) stopped = i[2]; out.push([i[2], i[3], i[4]]) }
   return out
 }
 // One document: { data } as zod returns it, or { issues } as zod reports them.

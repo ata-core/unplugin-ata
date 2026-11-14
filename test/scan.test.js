@@ -24,7 +24,7 @@ describe('scan', () => {
     await fs.writeFile(path.join(dir, 'app', 'good.js'), `${HEAD}const formSchema = z.object({ name: z.string().trim().min(2, 'Too short'), role: z.enum(['a', 'b']) })\nexport const r = zodResolver(formSchema)\n`)
     await fs.writeFile(path.join(dir, 'app', 'mixed.ts'), `${HEAD}import { loginSchema } from '../lib/schemas'
 const passwords = z.object({ password: z.string().min(8), confirm: z.string() }).refine((v) => v.password === v.confirm)
-const tags = z.object({ profile: z.object({ tags: z.array(z.string()).min(1) }) })
+const tags = z.object({ profile: z.object({ tags: z.array(z.union([z.string(), z.number()])).min(1) }) })
 const site = z.object({ site: z.string().url() })
 export const make = (min: number) => { const schema = z.object({ name: z.string().min(min) }); return zodResolver(schema) }
 export const a = zodResolver(passwords)
@@ -44,7 +44,7 @@ export const e = zodResolver(loginSchema, undefined, { raw: true })
     for (const k of r.zod.kept) assert.equal(k.file, path.join('app', 'mixed.ts'))
     assert.match(reasons['schema@7'], /not a constant written at the top of the file/)
     assert.match(reasons['passwords@8'], /function in it/)
-    assert.match(reasons['tags@9'], /profile\.tags: an array is not carried yet/)
+    assert.match(reasons['tags@9'], /profile\.tags\.\*: a union is not carried yet/)
     assert.match(reasons['site@10'], /site: url\(\) is not carried/)
     assert.match(reasons['loginSchema@12'], /passes options/)
     assert.match(reasons['loginSchema@11'], /also used as a value elsewhere/)
