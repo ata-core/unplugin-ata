@@ -62,6 +62,16 @@ export interface Options {
    */
   table?: boolean | 'auto'
   /**
+   * A written module checks `email`, `uri` and `uri-reference` with
+   * ata-validator's smaller regular expressions: the same answers as its
+   * scanners, fewer bytes, tens of nanoseconds slower a check. 'auto' (the
+   * default) takes them where the build knows the code goes to a browser
+   * (webpack and Rspack by target, Vite outside an ssr build, esbuild by
+   * platform, Turbopack by the loader's target). `true` always, `false`
+   * never. Needs ata-validator 1.64.0; an older one keeps the scanners.
+   */
+  smallFormats?: boolean | 'auto'
+  /**
    * OpenAPI documents (3.0 or 3.1; JSON, or YAML with the `yaml` package) to
    * write request body validators for: `openapi.json` gives
    * `openapi.validators.mjs` and `.d.mts` beside it, one `<operation>Body`

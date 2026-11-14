@@ -28,7 +28,8 @@ module.exports = function ataTurbopackLoader (source) {
   const file = this.resourcePath;
   sessionFor(options, this.rootContext || process.cwd()).then(async (hooks) => {
     if (!hooks.transformInclude(file)) return done(null, source);
-    const out = await hooks.transform.call({}, source, file);
+    // Turbopack runs the loader once for the browser and once for the server.
+    const out = await hooks.transform.call({}, source, file, { target: this.target });
     done(null, out ? out.code : source, out && out.map ? out.map : undefined);
   }, done).catch(done);
 };
