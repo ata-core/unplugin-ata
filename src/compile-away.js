@@ -64,7 +64,7 @@ import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
 import { readsOnlyPlainFields } from './error-use.js'
-import { ZOD_RESOLVERS, ZOD_RUNTIME, ZOD_RUNTIME_PLAIN, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
+import { ZOD_RESOLVERS, zodRuntimeFor, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
@@ -1082,6 +1082,7 @@ export function compileAway(code, id, ata, options) {
   // report beside the validators kept on the runtime.
   const zodKeep = (call, reason) => { if (options && Array.isArray(options.kept)) options.kept.push({ line: call.loc ? call.loc.start.line : null, reason: `zodResolver(${call.arguments[0] && call.arguments[0].type === 'Identifier' ? call.arguments[0].name : '...'}): ${reason}`, zod: true }) }
   let zodRewrites = false
+  let zodRefines = false
   if (zodFile && !virtual) {
     const zHere = zodFile.zod ? zodFor(id, zodFile.zod.source, zodFile.zod.kind) : null
     // A schema the file imports by name is read from the module it comes
@@ -1165,10 +1166,12 @@ export function compileAway(code, id, ata, options) {
       for (const f of take) {
         const index = modules.length
         f.ir.place(index, f.ir.src, false)
-        s.overwrite(f.call.start, f.call.end, `__ataZodResolver(__ataCompiled${index}, ${lit(f.plan.table)}, ${lit(f.plan.paths)})`)
+        // A refine's function goes into the file as it is written.
+        s.overwrite(f.call.start, f.call.end, `__ataZodResolver(__ataCompiled${index}, ${lit(f.plan.table)}, ${lit(f.plan.paths)}${f.plan.refines ? `, undefined, ${lit(f.plan.refines)}, [${f.plan.fns.map((fn) => `(${String(fn)})`).join(', ')}]` : ''})`)
         done.add(f.call)
         zodDone++
         if (f.plan.rewrites) zodRewrites = true
+        if (f.plan.refines) zodRefines = true
       }
       for (const stmt of removed) s.remove(stmt.start, stmt.end)
       // An imported schema: its name leaves the import, or stays as a type
@@ -1406,7 +1409,7 @@ export function compileAway(code, id, ata, options) {
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (resolverCalls.size) addImport(resolverKind === 'own' ? OWN_RESOLVER : `import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
-  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + (zodRewrites ? ZOD_RUNTIME : ZOD_RUNTIME_PLAIN))
+  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + zodRuntimeFor(zodRewrites, zodRefines))
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)

@@ -441,9 +441,13 @@ as the schema itself, `z.email()`; several `regex` checks on one field; `trim`, 
 written before the checks or after them), numbers (`int`,
 `min`, `max`, `gt`, `lt`, `positive`, and `z.coerce.number()`), booleans, enums, literals, optional
 fields, nested objects and arrays of any of these (`min`, `max`, `length`,
-`nonempty`), with zod 4. Not carried, so the call stays as
+`nonempty`), and `refine` on any of them where its function reads nothing
+but its own argument (`(v) => v.password === v.confirm`, with its message,
+`path` and `abort`), with zod 4. A refine's function goes into the page as
+it is written. Not carried, so the call stays as
 written and zod stays on that page: unions, `nullable`, `url`,
-`refine`, `transform`, `default`, `coerce` on anything but a number, a
+a `refine` that reads a value from outside, an async one, `superRefine`,
+`transform`, `default`, `coerce` on anything but a number, a
 rewrite such as `trim` between two checks, strict objects, a schema
 exported from the file of the call or used elsewhere in it as a value, a schema built from anything but zod and constants of the file,
 and a call that passes options. An application that changes zod's messages

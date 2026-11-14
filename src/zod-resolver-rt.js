@@ -44,40 +44,84 @@ const __ataZPrep = (P, pat, v) => {
   return out
 }
 //</rewrites>
+//<refines>
+// refine(): each function of the schema, run where zod runs it. zod parses a
+// node's children, then runs the node's checks in order, and skips a refine
+// once something before it has stopped the node: a wrong type, a missing
+// value, an enum that does not match or an oversized array anywhere under
+// it, or an earlier check of its own that stops. A length or a pattern that
+// fails does not stop it. R is [pattern, rank, function, message, path, stops]
+// in that order of evaluation; an issue is [order key, rank, path, code,
+// message, stop, owner, stops (2: outright), an array's own length check].
+const __ataZRefine = (issues, P, R, F, doc) => {
+  const places = (pat) => {
+    let out = ['']
+    if (pat) for (const seg of pat.slice(1).split('/')) {
+      const next = []
+      for (const ip of out) {
+        if (seg === '*' && P[__ataZPat(P, ip)].a) { const v = __ataZAt(doc, ip); if (Array.isArray(v)) for (let i = 0; i < v.length; i++) next.push(ip + '/' + i) } else next.push(ip + '/' + seg)
+      }
+      out = next
+    }
+    return out
+  }
+  for (const r of R) for (const ip of places(r[0])) {
+    const v = __ataZAt(doc, ip)
+    if (v === undefined) continue
+    if (issues.some((i) => (i[5] === 1 || i[7]) && (i[6] === ip ? i[1] < r[1] : i[6].startsWith(ip + '/') || ip.startsWith(i[6] + '/')))) continue
+    // zod hands a refine what it has parsed so far: an object or an array as
+    // it would be handed back, unknown keys gone.
+    const whole = P[r[0]].k || P[r[0]].a
+    if (F[r[2]](whole ? __ataZStrip(P, r[0], v) : v)) continue
+    const key = __ataZKey(P, ip)
+    if (whole) key.push(Infinity)
+    issues.push([key, r[1], ip + r[4], 'custom', r[3] === null ? 'Invalid input' : r[3], r[5], ip, r[5] ? 2 : 0])
+  }
+}
+//</refines>
 // zod's issues for a rejected document, in zod's order: [instancePath, code, message].
-const __ataZIssues = (errors, T, P, values) => {
-  const issues = []; const capped = []
+const __ataZIssues = (errors, T, P, values, R, F) => {
+  let issues = []; const capped = []
   for (const e of errors) {
-    if (e.keyword === 'required') { const ip = e.instancePath + '/' + __ataZEsc(e.params.missingProperty); const u = P[__ataZPat(P, ip)].u; issues.push([__ataZKey(P, ip), -1, ip, u[0], u[1], 1]); continue }
+    if (e.keyword === 'required') { const ip = e.instancePath + '/' + __ataZEsc(e.params.missingProperty); const u = P[__ataZPat(P, ip)].u; issues.push([__ataZKey(P, ip), -1, ip, u[0], u[1], 1, ip]); continue }
     const entry = T[e.schemaPath]; const ip = e.instancePath; const key = __ataZKey(P, ip)
     if (Array.isArray(entry)) {
       // A check of an array itself comes after its items; one that caps its
       // length is the only thing zod says about an array longer than that.
       if (entry[3]) { key.push(Infinity); if (entry[3] === 2) capped.push(ip + '/') }
-      issues.push([key, entry[0], ip, entry[1], entry[2], 0]); continue
+      issues.push([key, entry[0], ip, entry[1], entry[2], 0, ip, entry[3] === 2 ? 2 : entry[4], entry[3]]); continue
     }
     const v = __ataZAt(values, ip)
     // A number that is not whole: the int check's issue at its place among
     // the checks, and nothing after it.
-    if (entry.i && typeof v === 'number' && Number.isFinite(v)) { issues.push([key, entry.i[0], ip, entry.i[1], entry.i[2], 1]); continue }
-    issues.push([key, -1, ip, 'invalid_type', entry.t.m !== undefined ? entry.t.m : 'Invalid input: expected ' + entry.t.x + ', received ' + __ataZReceived(v), 1])
+    if (entry.i && typeof v === 'number' && Number.isFinite(v)) { issues.push([key, entry.i[0], ip, entry.i[1], entry.i[2], 1, ip]); continue }
+    issues.push([key, -1, ip, 'invalid_type', entry.t.m !== undefined ? entry.t.m : 'Invalid input: expected ' + entry.t.x + ', received ' + __ataZReceived(v), 1, ip])
     // The wrong type stops the checks, except those on a length, worded by
     // what was given: the other kind that has one (c[4]), or anything else.
-    if (entry.l && v != null && v.length !== undefined) for (const c of entry.l) if (c[0] ? v.length > c[1] : v.length < c[1]) issues.push([key, c[2], ip, c[3], (entry.s ? typeof v === 'string' : Array.isArray(v)) ? c[4] : c[5], 2])
+    if (entry.l && v != null && v.length !== undefined) for (const c of entry.l) if (c[0] ? v.length > c[1] : v.length < c[1]) issues.push([key, c[2], ip, c[3], (entry.s ? typeof v === 'string' : Array.isArray(v)) ? c[4] : c[5], 2, ip])
   }
+  // zod does not read the items of an oversized array: what the check
+  // found under one is not something zod would have said.
+  if (capped.length) issues = issues.filter((i) => !capped.some((c) => i[6].startsWith(c)))
+  if (R) __ataZRefine(issues, P, R, F, values)
   issues.sort((a, b) => { for (let i = 0; ; i++) { const x = a[0][i]; const y = b[0][i]; if (x === undefined || y === undefined) return (x === undefined ? 0 : 1) - (y === undefined ? 0 : 1) || a[1] - b[1]; if (x !== y) return x - y } })
   const out = []; let stopped = null
-  for (const i of issues) { if (capped.some((c) => i[2].startsWith(c))) continue; if (stopped === i[2] && i[5] !== 2) continue; if (i[5] === 1) stopped = i[2]; out.push([i[2], i[3], i[4]]) }
+  // An array's own length check is not run once something under it was
+  // stopped outright: an oversized array, or a refine written to stop.
+  for (const i of issues) { if (i[8] && issues.some((x) => x[7] === 2 && x[6].startsWith(i[6] + '/'))) continue; if (stopped === i[6] && i[5] !== 2) continue; if (i[5] === 1) stopped = i[6]; out.push([i[2], i[3], i[4]]) }
   return out
 }
 // One document: { data } as zod returns it, or { issues } as zod reports them.
-const __ataZRun = (validate, T, P, values) => {
+// A schema with refine() runs its functions on a document the check passed too.
+const __ataZRun = (validate, T, P, values, R, F) => {
   const doc = P[''].p ? __ataZPrep(P, '', values) : values
   const r = validate(doc)
-  return r.valid ? { data: __ataZStrip(P, '', doc) } : { issues: __ataZIssues(r.errors, T, P, doc) }
+  if (r.valid && !R) return { data: __ataZStrip(P, '', doc) }
+  const issues = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F)
+  return issues.length ? { issues } : { data: __ataZStrip(P, '', doc) }
 }
-const __ataZodResolver = (compiled, T, P, ro) => async (values, _, options) => {
-  const r = __ataZRun(compiled.validate, T, P, values)
+const __ataZodResolver = (compiled, T, P, ro, R, F) => async (values, _, options) => {
+  const r = __ataZRun(compiled.validate, T, P, values, R, F)
   if (r.issues === undefined) {
     options.shouldUseNativeValidation && __ataZNative({}, options)
     return { errors: {}, values: ro && ro.raw ? Object.assign({}, values) : r.data }
