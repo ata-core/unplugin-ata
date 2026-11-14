@@ -233,6 +233,13 @@ async function loadAta() {
   // compiled ones on 129 of 438 SchemaStore schemas by a fifth or more
   // (warmed, against their samples); from 1.63.1 on 51, and faster on 216.
   // `ir: true` takes it on any ata-validator that has it.
+  // Where the installed ata-validator keeps the kernels, as a URL: `verify`
+  // loads a written module from a temporary directory, where the package
+  // name its imports carry resolves to nothing.
+  let kernelsUrl = null
+  if (ir !== null) {
+    try { const u = import.meta.resolve('ata-validator/kernels'); kernelsUrl = typeof u === 'string' ? u : null } catch { kernelsUrl = null }
+  }
   let ataVersion = null
   try { ataVersion = typeof api.version === 'function' ? api.version() : null } catch { ataVersion = null }
   const irDefault = ir !== null && atLeast(ataVersion, IR_DEFAULT_MIN)
@@ -346,6 +353,7 @@ async function loadAta() {
     compiledExtendChecks,
     compiledStandard,
     ir,
+    kernelsUrl,
     irDefault,
     t,
   }

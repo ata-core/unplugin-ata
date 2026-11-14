@@ -971,10 +971,30 @@ export function compileAway(code, id, ata, options) {
   }
   // The IR's form of a validator: a table plan where the application chose
   // them and the schema is one the table takes, the module otherwise.
-  const irFor = (schema, opts, verdictOnly) => {
+  // `verify` holds what ata-validator/ir writes for a schema against the
+  // runtime: the written module under the Validator's default options, with
+  // its errors, whichever of the IR's forms the build takes (a module with
+  // other options, a verdict alone, a plan). They are written from the same
+  // reading of the schema, so a reference the IR cannot follow or a keyword
+  // it reads another way shows in this one. Before this the list was filled
+  // on the standalone path only, and a build on the IR, the default from
+  // ata-validator 1.63.1, verified nothing.
+  const holdIR = (schema, at) => {
+    if (!(options && options.verifying instanceof Map) || !ata.kernelsUrl) return
+    let full = null
+    try { full = ata.ir.specialize(schema, { verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { full = null }
+    if (!full) return
+    // Two validators written on one line keep an entry each.
+    const base = `${id}:${at && at.loc ? at.loc.start.line : '?'}`
+    let key = base
+    for (let n = 2; options.verifying.has(key); n++) key = `${base}#${n}`
+    options.verifying.set(key, { schema, src: full.replace(/(['"])ata-validator\/kernels\1/g, () => JSON.stringify(ata.kernelsUrl)) })
+  }
+  const irFor = (schema, opts, verdictOnly, at) => {
     let irSrc = null
     try { irSrc = ata.ir.specialize(schema, { ...opts, verdict: true, fillSource: ata.defaultsSource || undefined }) } catch { irSrc = null }
     if (!irSrc) return null
+    holdIR(schema, at)
     if (table && typeof ata.ir.tableModule === 'function') {
       let tab = null
       try { tab = ata.ir.tableModule(schema, opts) } catch { tab = null }
@@ -998,7 +1018,7 @@ export function compileAway(code, id, ata, options) {
       // error, in order, and those are the same in the plain shape, which
       // leaves the error enrichment out of the bundle.
       if (options && options.ir && ata.ir && !virtual) {
-        const ir = irFor(schema, { richErrors: false }, false)
+        const ir = irFor(schema, { richErrors: false }, false, call)
         if (ir) {
           const index = modules.length
           ir.place(index, ir.src, false)
@@ -1087,7 +1107,7 @@ export function compileAway(code, id, ata, options) {
         // fillSource: the runtime's generated defaults pass, written in where
         // the IR's own fill declines (on SchemaStore 0.56 of the time on the
         // 22 schemas it changes, slower on none).
-        const ir = irFor(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false }, verdictOnly)
+        const ir = irFor(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false }, verdictOnly, expr)
         if (ir) {
           const index = modules.length
           ir.place(index, ir.src, verdictOnly)

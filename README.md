@@ -561,6 +561,16 @@ fails the build with the document. This is `ata verify` inside the bundler. It
 runs by default where the `CI` environment variable is set and not on local
 builds; `verify: true` runs it everywhere.
 
+For a validator written by `ir` (below), what is held is the module
+ata-validator/ir writes for the schema under the `Validator`'s default
+options, with its errors, whichever form the build puts in the bundle: a
+module with other options, a verdict alone, or a plan. They come from one
+reading of the schema, so a reference it cannot follow or a keyword it reads
+another way shows there. The options a call passes are not part of the
+check. Until 0.16.0 a build on `ir`, the default from ata-validator 1.63.1,
+held no validator at all and the step passed without a line; it reports the
+number it checked.
+
 ### `ir`, a smaller compiled validator
 
 By default on ata-validator 1.63.1 and later (`ir: false` turns it off, `ir: true`

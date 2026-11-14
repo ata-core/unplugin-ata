@@ -54,4 +54,50 @@ export const why = (d: unknown) => user.validate(d).errors
     assert.match(lines[0], /verify: 1 compiled validator\(s\) answer as the runtime does on 7 generated documents each/)
     await assert.rejects(() => runVerify(new Map(), { verify: null }, true, null), /needs ata-validator 1.61.0/)
   })
+
+  // On ata-validator/ir, the default from 1.63.1, the list was never filled:
+  // the build verified nothing and said nothing.
+  it('holds what ata-validator/ir writes, as a module and as a plan', { skip: ata.ir ? false : 'ata-validator/ir is not installed' }, async () => {
+    const { compileAway } = await import('../src/compile-away.js')
+    const { runVerify } = await import('../src/index.js')
+    const code = `import { Validator } from 'ata-validator'
+const user = new Validator({ type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'integer', minimum: 1 }, email: { type: 'string', format: 'email' }, role: { enum: ['a', 'b'], default: 'a' } } })
+const tags = new Validator({ type: 'array', items: { type: 'string', maxLength: 8 }, uniqueItems: true }, { richErrors: false })
+export const ok = (d) => user.isValidObject(d)
+export const why = (d) => tags.validate(d).errors
+`
+    for (const options of [{ ir: true }, { ir: true, table: true }]) {
+      const verifying = new Map()
+      const out = compileAway(code, '/app/src/form.js', ata, { ...options, verifying })
+      assert.equal(out.replaced, 2)
+      assert.equal(verifying.size, 2, `both validators are held, ${JSON.stringify(options)}`)
+      assert.deepEqual([...verifying.keys()], ['/app/src/form.js:2', '/app/src/form.js:3'])
+      for (const { src } of verifying.values()) {
+        assert.ok(!/['"]ata-validator\//.test(src), 'no import by package name, which a temporary directory cannot resolve')
+        assert.match(src, /export function isValid\b/)
+        assert.match(src, /export function validate\b/)
+      }
+      const lines = []
+      await runVerify(verifying, ata, 20, { info: (l) => lines.push(l) })
+      assert.match(lines[0], /verify: 2 compiled validator\(s\) answer as the runtime does/)
+    }
+  })
+
+  it('fails on a written module that answers another schema, and on a runtime that throws', { skip: ata.ir ? false : 'ata-validator/ir is not installed' }, async () => {
+    const { compileAway } = await import('../src/compile-away.js')
+    const { runVerify } = await import('../src/index.js')
+    const verifying = new Map()
+    compileAway(`import { Validator } from 'ata-validator'\nconst v = new Validator({ type: 'object', required: ['n'], properties: { n: { type: 'integer' } } })\nexport const ok = (d) => v.isValidObject(d)\n`, '/app/src/n.js', ata, { ir: true, verifying })
+    assert.equal(verifying.size, 1)
+    // The module of one schema held against another: what a compiler that
+    // misread the schema would have written.
+    const [[key, entry]] = verifying
+    const other = new Map([[key, { schema: { type: 'object', required: ['n'], properties: { n: { type: 'string' } } }, src: entry.src }]])
+    await assert.rejects(() => runVerify(other, ata, 20, null), /verify: 1 compiled validator\(s\) disagree with the runtime[\s\S]*\/app\/src\/n\.js:2[\s\S]*disagree/)
+    assert.equal(other.size, 0)
+    const throwing = { verify: { ...ata.verify, verifySource: async () => { throw new TypeError("Cannot read properties of null (reading 'length')") } } }
+    const held = new Map([['/app/a.js:4', { schema: {}, src: '' }], ['/app/b.js:9', { schema: {}, src: '' }]])
+    await assert.rejects(() => runVerify(held, throwing, true, null), /verify: 2 compiled validator\(s\) disagree with the runtime\n\/app\/a\.js:4: could not be held against the runtime: Cannot read properties of null[\s\S]*\/app\/b\.js:9/)
+    assert.equal(held.size, 0, 'the list is consumed')
+  })
 })
