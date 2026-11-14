@@ -396,7 +396,8 @@ beyond the home page, gzipped: 43.5 KB as written and 15.0 KB through the
 plugin under Turbopack, 37.3 KB and 15.6 KB under webpack. react-hook-form
 alone is 12.3 KB.
 
-The schema can also come from another module of the project, imported by
+The schema can be a constant of the file, built from zod and other constants
+of the file, or written in the call itself. It can also come from another module of the project, imported by
 name (`import { formSchema } from '@/lib/schemas'`). That module is read as
 text and never run: it has to import zod under one name and build the schema
 from zod and its own constants. A module that builds it from another module's
@@ -411,11 +412,14 @@ differs keeps its call. `test/zod-resolver.test.js` holds the written
 resolver to the package's `zodResolver` on generated forms.
 
 Carried: an object of strings (`min`, `max`, `length`, `email`, `regex`,
-`uuid` and the other formats zod checks with a pattern), numbers (`int`,
+`uuid` and the other formats zod checks with a pattern, written as a check or
+as the schema itself, `z.email()`; `trim`, `toLowerCase` and `toUpperCase`
+written before the checks or after them), numbers (`int`,
 `min`, `max`, `gt`, `lt`, `positive`), booleans, enums, literals, optional
 fields and nested objects, with zod 4. Not carried, so the call stays as
 written and zod stays on that page: arrays, unions, `nullable`, `url`,
-`refine`, `transform`, `default`, `coerce`, `trim`, strict objects, a schema
+`refine`, `transform`, `default`, `coerce`, a rewrite such as `trim` between
+two checks, strict objects, a schema
 exported from the file of the call or used elsewhere in it as a value, a schema built from anything but zod and constants of the file,
 and a call that passes options. An application that changes zod's messages
 as a whole (`z.config(...)`, a locale, a global error map) gets no call

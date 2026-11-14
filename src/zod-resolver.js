@@ -16,10 +16,12 @@
 // zodResolver call and zod stays on the page, as before.
 //
 // Carried: an object of strings (min, max, length, email, regex and the other
-// formats zod checks with a pattern), numbers (int, min, max, gt, lt,
+// formats zod checks with a pattern, as a check or as the schema itself; trim,
+// toLowerCase and toUpperCase before the checks or after them), numbers (int, min, max, gt, lt,
 // positive and the like), booleans, enums, literals, optional fields and
 // nested objects. Refused: arrays, unions, nullable, url, refine, transform,
-// default, coerce, trim and the like, strict and passthrough objects, zod 3.
+// default, coerce, a rewrite between two checks, strict and passthrough
+// objects, zod 3.
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 
@@ -29,7 +31,7 @@ export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validat
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
 // the real toNestErrors, validateFieldsNatively and appendErrors.
-export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { issues: __ataZIssues, strip: __ataZStrip, resolver: __ataZodResolver }')(nest, native, append)
+export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { run: __ataZRun, resolver: __ataZodResolver }')(nest, native, append)
 const RT = zodRuntime(null, null, null)
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER
@@ -71,11 +73,37 @@ export function planZod (schema) {
       // zod runs a length check on anything that has a length, a string or
       // not, and words the default message by what it was given.
       const origins = (n, pick, what) => [one(node, new Array(n).fill(0), pick, what), one(node, { length: n }, pick, what)].map((x) => x[1])
+      // A string zod rewrites: the rewrites written before every check are
+      // made before the check runs, those after every check only on what is
+      // handed back. One between two checks is refused.
+      const OPS = [/=>\s*input\.trim\(\)$/, /=>\s*input\.toLowerCase\(\)$/, /=>\s*input\.toUpperCase\(\)$/]
+      const opOf = (d) => d.check === 'overwrite' && typeof d.tx === 'function' ? OPS.findIndex((re) => re.test(String(d.tx).trim())) : -1
+      const kinds = checks.map((c) => c._zod.def.check === 'overwrite' ? (opOf(c._zod.def) === -1 ? no('a rewrite other than trim, toLowerCase and toUpperCase') : 'w') : 'c')
+      // A format that is the schema itself (z.email()) is checked before
+      // every entry of the list, so it counts as a check at its head.
+      const head = def.check === 'string_format'
+      const firstCheck = head ? -1 : kinds.indexOf('c'); const lastCheck = kinds.lastIndexOf('c')
+      const any = head || lastCheck !== -1
+      kinds.forEach((k, i) => { if (k === 'w' && any && i > firstCheck && i < lastCheck) no('a rewrite between two checks') })
+      const pre = []; const post = []
+      checks.forEach((c, i) => { if (kinds[i] === 'w') (!any || (!head && i < firstCheck) ? pre : post).push(opOf(c._zod.def)) })
+      if (pre.length) { here.w = pre; paths[''].p = 1 }
+      if (post.length) here.x = post
+      // z.email() and the like: the format is the schema itself and is
+      // checked before its checks.
+      if (def.check === 'string_format') {
+        if (!(def.pattern instanceof RegExp) || (def.pattern.flags !== '' && def.pattern.flags !== 'u')) no(`string format ${def.format}`)
+        const bad = ['', ' ', '\u0000', 'x', '@', '0'].find((v) => !def.pattern.test(v))
+        if (bad === undefined) no('a pattern no probe breaks')
+        put('pattern', def.pattern.source, [-0.5, ...one(node, bad, (i) => i.code === 'invalid_format' && i.format === def.format, 'format')])
+      }
       checks.forEach((c, rank) => {
         const d = c._zod.def
+        if (d.check === 'overwrite') return
         if (d.check === 'min_length' && d.minimum >= 1) len.push([0, d.minimum, rank, 'too_small', ...origins(d.minimum - 1, (i) => i.code === 'too_small' && i.minimum === d.minimum, 'min')])
         if (d.check === 'max_length') len.push([1, d.maximum, rank, 'too_big', ...origins(d.maximum + 1, (i) => i.code === 'too_big' && i.maximum === d.maximum, 'max')])
         if (d.check === 'length_equals') { if (d.length >= 1) len.push([0, d.length, rank, 'too_small', ...origins(d.length - 1, (i) => i.code === 'too_small' && i.exact === true, 'length')]); len.push([1, d.length, rank, 'too_big', ...origins(d.length + 1, (i) => i.code === 'too_big' && i.exact === true, 'length')]) }
+        if (d.check === 'overwrite') return
         if (d.check === 'min_length') { if (d.minimum < 1) return; put('minLength', d.minimum, [rank, ...one(node, 'a'.repeat(d.minimum - 1), (i) => i.code === 'too_small' && i.minimum === d.minimum, 'min')]) }
         else if (d.check === 'max_length') { if (d.maximum > 100000) no('a very long maximum'); put('maxLength', d.maximum, [rank, ...one(node, 'a'.repeat(d.maximum + 1), (i) => i.code === 'too_big' && i.maximum === d.maximum, 'max')]) }
         else if (d.check === 'length_equals') {
@@ -145,7 +173,7 @@ export function zodFor (file, source, kind) {
 }
 
 // A value of each kind a form can hand a field, and values that pass a leaf.
-const POOL = [undefined, null, '', ' ', 'a', 'ab', 'abc', 'abcdefghijklmnopqrstuvwxyz0123456789', 'a@b.co', 'A1b2c3d4', '12345', '123e4567-e89b-42d3-a456-426614174000', 0, 1, -1, 0.5, 17, 18, 100, 1e9, 2 ** 60, NaN, Infinity, true, false, [], ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], {}, { length: 1 }, { length: 99 }, new Date(0)]
+const POOL = [undefined, null, '', ' ', 'a', 'ab', 'abc', '  ab ', ' A@B.CO ', 'ABC', 'Stra\u00dfe', 'abcdefghijklmnopqrstuvwxyz0123456789', 'a@b.co', 'A1b2c3d4', '12345', '123e4567-e89b-42d3-a456-426614174000', 0, 1, -1, 0.5, 17, 18, 100, 1e9, 2 ** 60, NaN, Infinity, true, false, [], ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], {}, { length: 1 }, { length: 99 }, new Date(0)]
 const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefined' : typeof v === 'number' && !Number.isFinite(v) ? '\u0000' + String(v) : v)
 
 // Whether the plan answers as the schema does: zod's issues (path, code,
@@ -178,10 +206,10 @@ export function selfCheck (schema, plan, validate) {
   for (let i = 0; i < 60 && leaves.length > 1; i++) { let d = base; for (const ip of leaves) if (next(3) === 0) d = set(d, ip, POOL[next(POOL.length)], next(5) === 0); docs.push(d) }
   for (const d of docs) {
     const want = schema.safeParse(copy(d))
-    const got = validate(copy(d))
-    if (want.success !== got.valid) return `verdict on ${show(d)}`
-    if (want.success) { if (show(want.data) !== show(RT.strip(plan.paths, '', d))) return `data on ${show(d)}`; continue }
-    const mine = RT.issues(got.errors, plan.table, plan.paths, d)
+    const got = RT.run(validate, plan.table, plan.paths, copy(d))
+    if (want.success !== (got.issues === undefined)) return `verdict on ${show(d)}`
+    if (want.success) { if (show(want.data) !== show(got.data)) return `data on ${show(d)}`; continue }
+    const mine = got.issues
     const theirs = want.error.issues.map((i) => ['' + i.path.map((s) => '/' + String(s).replace(/~/g, '~0').replace(/\//g, '~1')).join(''), i.code, i.message])
     if (show(mine) !== show(theirs)) return `issues on ${show(d)}`
   }
@@ -271,6 +299,18 @@ export function readZodModule (file, parse) {
 // TypeScript expression): then it cannot be built outside the file.
 export function schemaSource (name, info, code, exportedToo = false) {
   const order = []; const seen = new Set()
+  const readable = (node) => {
+    let ok = true
+    walk(node, (n, up) => {
+      if (!ok) return
+      if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = false; return }
+      // Nothing but zod's own methods by name: no computed member, and none
+      // of the names that reach a function constructor.
+      if ((n.type === 'MemberExpression' || n.type === 'OptionalMemberExpression') && (n.computed || /^(?:constructor|prototype|__proto__|call|apply|bind)$/.test(n.property.name))) { ok = false; return }
+      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name) || !visit(n.name)) ok = false }
+    })
+    return ok
+  }
   const visit = (nm) => {
     if (seen.has(nm)) return true
     seen.add(nm)
@@ -278,17 +318,14 @@ export function schemaSource (name, info, code, exportedToo = false) {
     // In the file of the call an exported constant has readers the build
     // does not see, so it cannot be taken out and is not read.
     if (!c || (c.exported && !exportedToo)) return false
-    let ok = true
-    walk(c.init, (n, up) => {
-      if (!ok) return
-      if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = false; return }
-      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name) || !visit(n.name)) ok = false }
-    })
-    if (ok) order.push(nm)
-    return ok
+    if (!readable(c.init)) return false
+    order.push(nm)
+    return true
   }
-  if (!visit(name)) return null
-  return { names: order, text: order.map((nm) => `const ${nm} = ${code.slice(info.consts.get(nm).init.start, info.consts.get(nm).init.end)};\n`).join('') + `return ${name};` }
+  // A name, or the expression written in the call itself.
+  if (typeof name === 'string') { if (!visit(name)) return null } else if (!readable(name)) return null
+  const body = order.map((nm) => `const ${nm} = ${code.slice(info.consts.get(nm).init.start, info.consts.get(nm).init.end)};\n`).join('')
+  return { names: order, text: body + (typeof name === 'string' ? `return ${name};` : `return (${code.slice(name.start, name.end)});`) }
 }
 
 // Where the file still uses `names` once `removed` statements and `replaced`
