@@ -6,7 +6,7 @@ Each `new Validator(schema)` in your code whose schema the build can read become
 
 It also compiles JSON Schema files into self-contained modules with TypeScript declarations. Such a module imports nothing; a small schema compiles to about 1.3 KB gzipped and a ten-field one to about 2.6 KB, full error detail included, on ata-validator 1.36.0. It exports `validate`, `isValid` and the inferred type, and runs anywhere plain JavaScript runs. Schemas can be authored as `.json`, `.js` or `.ts`.
 
-A form that validates with react-hook-form's `zodResolver(schema)` is compiled the same way, without changing the form: where the build can read the schema, zod leaves the page (a Next.js form page went from 43.5 to 15.3 KB gzipped). This is on by default. `zodResolver: false` turns it off, and `npx @ata-project/unplugin scan` shows which calls a build would compile, and why not the others, before you add the plugin. See [react-hook-form with zod](#react-hook-form-with-zod-zodresolverschema).
+A form that validates with react-hook-form's `zodResolver(schema)` is compiled the same way, without changing the form: where the build can read the schema, zod leaves the page (a Next.js form page went from 43.5 to 15.4 KB gzipped). This is on by default. `zodResolver: false` turns it off, and `npx @ata-project/unplugin scan` shows which calls a build would compile, and why not the others, before you add the plugin. See [react-hook-form with zod](#react-hook-form-with-zod-zodresolverschema).
 
 ## Install
 
@@ -418,8 +418,8 @@ dropped.
 
 Measured on a Next.js 16.4.6 page with a five-field form (react-hook-form
 7.92.0, @hookform/resolvers 7.0.6, zod 4.6.7), the scripts the page loads
-beyond the home page, gzipped: 43.5 KB as written and 15.3 KB through the
-plugin under Turbopack, 37.3 KB and 15.8 KB under webpack. react-hook-form
+beyond the home page, gzipped: 43.5 KB as written and 15.4 KB through the
+plugin under Turbopack, 37.3 KB and 15.9 KB under webpack. react-hook-form
 alone is 12.3 KB.
 
 The schema can be a constant of the file, at the top or inside the component,
@@ -440,7 +440,9 @@ resolver to the package's `zodResolver` on generated forms.
 
 Carried: an object of strings (`min`, `max`, `length`, `email`, `regex`,
 `uuid` and the other formats zod checks with a pattern, written as a check or
-as the schema itself, `z.email()`; several `regex` checks on one field; `trim`, `toLowerCase` and `toUpperCase`
+as the schema itself, `z.email()`; several `regex` checks on one field; `url()`, checked
+with the browser's own URL parser as zod checks it, as the last check of its
+field; `trim`, `toLowerCase` and `toUpperCase`
 written before the checks or after them), numbers (`int`,
 `min`, `max`, `gt`, `lt`, `positive`, and `z.coerce.number()`), booleans, enums, literals, optional
 fields, nested objects and arrays of any of these (`min`, `max`, `length`,
@@ -448,7 +450,8 @@ fields, nested objects and arrays of any of these (`min`, `max`, `length`,
 but its own argument (`(v) => v.password === v.confirm`, with its message,
 `path` and `abort`), with zod 4. A refine's function goes into the page as
 it is written. Not carried, so the call stays as
-written and zod stays on that page: unions, `nullable`, `url`,
+written and zod stays on that page: unions, `nullable`, `url()` with
+`hostname`, `protocol` or `normalize` or with a check after it,
 a `refine` that reads a value from outside, an async one, `superRefine`,
 `transform`, `default`, `coerce` on anything but a number, a
 rewrite such as `trim` between two checks, strict objects, a schema

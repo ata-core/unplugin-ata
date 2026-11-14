@@ -29,7 +29,9 @@ const __ataZStrip = (P, pat, v) => {
   return out
 }
 //<rewrites>
-const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : op === 2 ? v.toUpperCase() : Number(v); return v }
+// 0 trim, 1 toLowerCase, 2 toUpperCase, 3 a coercion to a number, 4 what
+// url() hands back: the value trimmed, without ASCII tabs and line breaks.
+const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : op === 1 ? v.toLowerCase() : op === 2 ? v.toUpperCase() : op === 3 ? Number(v) : v.trim().replace(/[\t\n\r]/g, ''); return v }
 // A value zod rewrites before it checks it (trim, toLowerCase, toUpperCase,
 // a coercion to a number) is rewritten in a copy of the document, which is
 // what the check then reads.
@@ -50,7 +52,8 @@ const __ataZPrep = (P, pat, v) => {
 // once something before it has stopped the node: a wrong type, a missing
 // value, an enum that does not match or an oversized array anywhere under
 // it, or an earlier check of its own that stops. A length or a pattern that
-// fails does not stop it. R is [pattern, rank, function, message, path, stops]
+// fails does not stop it. R is [pattern, rank, function, message, path, stops,
+// code: 'custom' when left out]
 // in that order of evaluation; an issue is [order key, rank, path, code,
 // message, stop, owner, stops (2: outright), an array's own length check].
 const __ataZRefine = (issues, P, R, F, doc) => {
@@ -75,7 +78,7 @@ const __ataZRefine = (issues, P, R, F, doc) => {
     if (F[r[2]](whole ? __ataZStrip(P, r[0], v) : v)) continue
     const key = __ataZKey(P, ip)
     if (whole) key.push(Infinity)
-    issues.push([key, r[1], ip + r[4], 'custom', r[3] === null ? 'Invalid input' : r[3], r[5], ip, r[5] ? 2 : 0])
+    issues.push([key, r[1], ip + r[4], r[6] || 'custom', r[3] === null ? 'Invalid input' : r[3], r[5], ip, r[5] ? 2 : 0])
   }
 }
 //</refines>

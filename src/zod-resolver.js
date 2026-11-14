@@ -80,6 +80,17 @@ export function planZod (schema) {
   // refine(): [pattern, rank, function, message, path, stops], in the order
   // zod runs them (a node's children before the node), and the functions.
   const refines = []; const fns = []
+  // url(): zod trims the value and asks the platform's URL parser, the
+  // parser the page will ask too; it is run on the page as a refine is, and
+  // the value it hands back is the trimmed one.
+  const URL_CHECK = (v) => { const t = v.trim(); try { if (typeof URL.canParse === 'function') return URL.canParse(t); new URL(t); return true } catch { return false } }
+  const url = (d, rank, ip, here, last) => {
+    if ('normalize' in d || 'hostname' in d || 'protocol' in d) no('url() with normalize, hostname or protocol is not carried')
+    if (!last) no('a check written after url() is not carried (url() rewrites the value it passes)')
+    const [code, message] = one(node0(ip), 'not a url', (i) => i.code === 'invalid_format' && i.format === 'url', 'url')
+    refines.push([ip, rank, fns.push(URL_CHECK) - 1, message, '', d.abort ? 1 : 0, code])
+    here.x = (here.x || []).concat(4); rewrites = true
+  }
   const refine = (d, rank, ip, owner) => {
     if (typeof d.fn !== 'function' || d.when) no('a check written with check() or superRefine() is not carried')
     if (d.fn.constructor && d.fn.constructor.name !== 'Function') no('an async refine is not carried')
@@ -104,11 +115,13 @@ export function planZod (schema) {
       throw e
     }
   }
+  const nodes = new Map(); const node0 = (ip) => nodes.get(ip)
   const walkNode = (node, sp, ip) => {
     let def = node._zod.def
     let optional = false
     if (def.type === 'optional') { if ((def.checks || []).length) no('a check written after optional() is not carried'); optional = true; node = def.innerType; def = node._zod.def }
     const here = paths[ip] = { o: order++ }
+    nodes.set(ip, node)
     if (!optional) { const u = issuesOf(node, undefined); if (u.length !== 1) no(u.length === 0 ? 'a field that takes a missing value without being optional (any, unknown, a default) is not carried' : 'zod reports more than one thing for a missing value here'); here.u = [u[0].code, u[0].message] }
     else here.q = 1
     const out = {}
@@ -142,7 +155,9 @@ export function planZod (schema) {
       if (post.length) { here.x = post; rewrites = true }
       // z.email() and the like: the format is the schema itself and is
       // checked before its checks.
-      if (def.check === 'string_format') {
+      const lastCheck0 = checks.length - 1
+      if (def.check === 'string_format' && def.format === 'url' && !(def.pattern instanceof RegExp)) url(def, -0.5, ip, here, checks.length === 0)
+      else if (def.check === 'string_format') {
         if (!(def.pattern instanceof RegExp) || (def.pattern.flags !== '' && def.pattern.flags !== 'u')) no(`${def.format}() is not carried (zod does not check it with a pattern)`)
         const bad = ['', ' ', '\u0000', 'x', '@', '0'].find((v) => !def.pattern.test(v))
         if (bad === undefined) no('a pattern no probe breaks')
@@ -155,6 +170,7 @@ export function planZod (schema) {
         if (d.check === 'max_length') len.push([1, d.maximum, rank, 'too_big', ...origins(d.maximum + 1, (i) => i.code === 'too_big' && i.maximum === d.maximum, 'max')])
         if (d.check === 'length_equals') { if (d.length >= 1) len.push([0, d.length, rank, 'too_small', ...origins(d.length - 1, (i) => i.code === 'too_small' && i.exact === true, 'length')]); len.push([1, d.length, rank, 'too_big', ...origins(d.length + 1, (i) => i.code === 'too_big' && i.exact === true, 'length')]) }
         if (d.check === 'custom') { refine(d, rank, ip, def); return }
+        if (d.check === 'string_format' && d.format === 'url' && !(d.pattern instanceof RegExp)) { url(d, rank, ip, here, rank === lastCheck0); return }
         if (d.check === 'min_length') { if (d.minimum < 1) return; put('minLength', d.minimum, [rank, ...one(node, 'a'.repeat(d.minimum - 1), (i) => i.code === 'too_small' && i.minimum === d.minimum, 'min')]) }
         else if (d.check === 'max_length') { if (d.maximum > 100000) no('a very long maximum'); put('maxLength', d.maximum, [rank, ...one(node, 'a'.repeat(d.maximum + 1), (i) => i.code === 'too_big' && i.maximum === d.maximum, 'max')]) }
         else if (d.check === 'length_equals') {

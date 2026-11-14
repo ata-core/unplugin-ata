@@ -24,7 +24,7 @@ const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefin
 const OPTS = [{ fields: {}, shouldUseNativeValidation: false }, { fields: {}, shouldUseNativeValidation: false, criteriaMode: 'all' }]
 const clone = (d) => { if (Array.isArray(d)) return d.map(clone); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = clone(d[k]); return o }
 const OUTSIDE = 'x'
-const VALUES = [undefined, null, '', 'a', 'ab', 'abc', '42', ' 7 ', '1e3', 'Ab!', 'A@b', '0x10', '  ab ', ' A@B.CO ', 'ABC', ' 12345 ', 'Stra\u00dfe', 'abcdefghij', 'a@b.co', '12345', 'x', 'b', 'c', 0, 1, 7, 18.5, 25, 80, -3, NaN, Infinity, 2 ** 60, true, false, [], {}, ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'], { a0: 1 }, { length: 1 }, { length: 99 }, new Date(0), '123e4567-e89b-42d3-a456-426614174000']
+const VALUES = [undefined, null, '', 'a', 'ab', 'abc', 'https://example.com', ' http://a.b/c ', 'mailto:x@y.z', 'http://', 'a:b', 'https://exa\nmple.com', '42', ' 7 ', '1e3', 'Ab!', 'A@b', '0x10', '  ab ', ' A@B.CO ', 'ABC', ' 12345 ', 'Stra\u00dfe', 'abcdefghij', 'a@b.co', '12345', 'x', 'b', 'c', 0, 1, 7, 18.5, 25, 80, -3, NaN, Infinity, 2 ** 60, true, false, [], {}, ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'], { a0: 1 }, { length: 1 }, { length: 99 }, new Date(0), '123e4567-e89b-42d3-a456-426614174000']
 
 // Form schemas made by a fixed sequence: strings, numbers, booleans, enums,
 // literals, optional fields and nested objects, with and without messages.
@@ -35,6 +35,7 @@ function forms (seed0, count) {
   const msg = () => maybe(0.5) ? undefined : pick(['Required', 'Too short', 'Bad value.', { message: 'Custom message' }])
   const str = () => {
     const plain = !maybe(0.15)
+    if (maybe(0.06)) return maybe(0.5) ? z.url(msg()) : (maybe(0.5) ? z.string().min(1, msg()) : z.string()).url(msg())
     // A password's rules: several patterns on one field, and nothing else that contradicts them.
     if (plain && maybe(0.12)) { let p = z.string().min(2 + int(3), msg()).regex(/[A-Z]/, msg()).regex(/[!@#]/, msg()); if (maybe(0.5)) p = p.regex(/[0-9]/, msg()); return p }
     let s = plain ? z.string(maybe(0.2) ? { error: 'Must be text' } : undefined) : pick([() => z.email(msg()), () => z.uuid(msg())])(); const steps = []
@@ -56,7 +57,7 @@ function forms (seed0, count) {
     if (maybe(0.3)) o = o.refine(pick([(v) => Object.keys(v).length !== 2, (v) => Object.values(v)[0] !== Object.values(v)[1], (v) => !('extra' in v)]), pick([undefined, 'Not together', { message: 'At the first field', path: [first] }, { message: 'Stops', abort: true }]))
     if (maybe(0.1)) o = o.refine((v) => Object.keys(v).length < 4, { message: 'Too many', path: ['nowhere', 0] })
     return o }
-  const good = (node) => { const d = node._zod.def; if (d.type === 'optional') return maybe(0.3) ? undefined : good(d.innerType); if (d.type === 'object') return doc(node, 0.05); if (d.type === 'array') return Array.from({ length: int(5) }, () => maybe(0.2) ? pick(VALUES) : good(d.element)); if (d.type === 'enum') return pick(Object.values(d.entries)); if (d.type === 'literal') return d.values[0]; if (d.type === 'boolean') return maybe(0.5); if (d.type === 'number') return pick([18, 25, 21, 20, 30, 1]); return pick(['abc', 'a@b.co', '12345', 'abcd', 'ab', ' ab ', 'A@B.co ', '123e4567-e89b-42d3-a456-426614174000']) }
+  const good = (node) => { const d = node._zod.def; if (d.type === 'optional') return maybe(0.3) ? undefined : good(d.innerType); if (d.type === 'object') return doc(node, 0.05); if (d.type === 'array') return Array.from({ length: int(5) }, () => maybe(0.2) ? pick(VALUES) : good(d.element)); if (d.type === 'enum') return pick(Object.values(d.entries)); if (d.type === 'literal') return d.values[0]; if (d.type === 'boolean') return maybe(0.5); if (d.type === 'number') return pick([18, 25, 21, 20, 30, 1]); return pick(['abc', 'a@b.co', '12345', 'abcd', 'ab', ' ab ', 'A@B.co ', 'https://example.com', '123e4567-e89b-42d3-a456-426614174000']) }
   const doc = (node, pBad) => { const out = {}; for (const [k, child] of Object.entries(node._zod.def.shape)) { if (maybe(pBad)) { if (maybe(0.3)) continue; out[k] = pick(VALUES) } else { const v = good(child); if (v !== undefined || maybe(0.3)) out[k] = v } } if (maybe(0.2)) out.extra = 1; return out }
   const out = []
   for (let i = 0; i < count; i++) { const schema = obj(0); out.push({ schema, docs: Array.from({ length: 24 }, (_, j) => j === 0 ? {} : doc(schema, j < 6 ? 0 : 0.35)) }) }
@@ -116,6 +117,15 @@ describe('zodResolver compiled away: the plan against zod', () => {
       { n: 'x', s: 5, pair: { a: 1, b: 'y' } }, { n: 3, s: 'abcd', pair: { a: 'xy' } }, { n: 11, s: 'abcd', pair: null }, {},
     ]) for (const o of OPTS) assert.equal(show(await mine(clone(d), undefined, o)), show(await theirs(clone(d), undefined, o)), `on ${show(d)}`)
   })
+  it('checks url() with the platform URL parser, as zod does, and hands back the trimmed value', async () => {
+    const schema = z.object({ site: z.string().min(1, 'Required').url('Not a URL'), home: z.url().optional() })
+    const plan = planZod(schema)
+    const v = new ata.Validator(plan.json, { richErrors: false })
+    assert.equal(selfCheck(schema, plan, (d) => v.validate(d)), null)
+    const mine = RT.resolver({ validate: (d) => v.validate(d) }, plan.table, plan.paths, undefined, plan.refines, plan.fns)
+    const theirs = zodResolver(schema)
+    for (const d of [{ site: 'https://example.com' }, { site: '  https://example.com/a b\n ' }, { site: 'https://exa\tmple.com', home: ' mailto:x@y.z ' }, { site: '' }, { site: 'http://' }, { site: 'nope', home: 'a:b' }, { site: 5, home: '' }, {}]) for (const o of OPTS) assert.equal(show(await mine(clone(d), undefined, o)), show(await theirs(clone(d), undefined, o)), `on ${show(d)}`)
+  })
   it('the build-time check notices a table that is wrong', () => {
     const schema = z.object({ name: z.string().min(2, 'Too short').max(5), age: z.number().int().min(18).optional() })
     const plan = planZod(schema)
@@ -132,7 +142,7 @@ describe('zodResolver compiled away: the plan against zod', () => {
   it('refuses what it does not carry', () => {
     for (const schema of [
       z.object({ a: z.string().refine((v) => v !== OUTSIDE) }), z.object({ a: z.string().superRefine(() => {}) }), z.object({ a: z.string().optional().refine((v) => v !== 'x') }), z.object({ a: z.string().refine(async (v) => v !== 'x') }), z.object({ a: z.string().refine((v) => v !== 'x', { error: (i) => String(i.input) }) }), z.object({ a: z.string().min(1).trim().max(5) }), z.object({ a: z.string().normalize() }), z.object({ a: z.coerce.string() }), z.object({ a: z.coerce.boolean() }), z.object({ a: z.any() }), z.object({ a: z.array(z.string().optional()) }), z.object({ a: z.array(z.string()).min(1).min(2) }), z.object({ a: z.set(z.string()) }),
-      z.object({ a: z.string().url() }), z.object({ a: z.string().nullable() }), z.object({ a: z.union([z.string(), z.number()]) }), z.object({ a: z.string().default('x') }),
+      z.object({ a: z.string().url().min(10) }), z.object({ a: z.url({ protocol: /^https$/ }) }), z.object({ a: z.string().url({ normalize: true }) }), z.object({ a: z.string().nullable() }), z.object({ a: z.union([z.string(), z.number()]) }), z.object({ a: z.string().default('x') }),
       z.strictObject({ a: z.string() }), z.object({ a: z.string().transform((v) => v.length) }), z.object({ a: z.date() }), z.string(),
     ]) assert.throws(() => planZod(schema), ZodRefused)
   })
