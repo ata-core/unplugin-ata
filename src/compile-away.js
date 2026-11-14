@@ -63,7 +63,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
-import { ZOD_RESOLVERS, ZOD_RUNTIME, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, schemaSource, usesOf } from './zod-resolver.js'
+import { ZOD_RESOLVERS, ZOD_RUNTIME, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
@@ -1031,19 +1031,40 @@ export function compileAway(code, id, ata, options) {
   // stays as written.
   let zodDone = 0
   if (zodFile && !virtual) {
-    const z = zodFor(id, zodFile.zod.source, zodFile.zod.kind)
+    const zHere = zodFile.zod ? zodFor(id, zodFile.zod.source, zodFile.zod.kind) : null
+    // A schema the file imports by name is read from the module it comes
+    // from, as text: the module is not run, so it costs the build nothing but
+    // a parse and has no effect on it. It has to be a file of the project
+    // the build's own resolver finds, with zod under one name, and the
+    // schema has to be made of zod and constants of that module.
+    const named = new Map()
+    for (const stmt of ast.program.body) if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type') for (const sp of stmt.specifiers) if (sp.type === 'ImportSpecifier' && sp.importKind !== 'type') named.set(sp.local.name, { stmt, sp, imported: sp.imported.name || sp.imported.value })
     const found = []
-    if (z) for (const r of refs) {
+    for (const r of refs) {
       if (r.node.name !== zodFile.resolver.local || declared.get(zodFile.resolver.local) !== 1) continue
       const call = r.parent
       if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length !== 1 || call.arguments[0].type !== 'Identifier') continue
       const name = call.arguments[0].name
       if (declared.get(name) !== 1) continue
-      const src = schemaSource(name, zodFile, code)
-      if (!src) continue
+      let from = null
+      if (zodFile.consts.has(name)) {
+        const src = zHere ? schemaSource(name, zodFile, code) : null
+        if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
+      } else if (named.has(name) && options.resolveImport) {
+        const imp = named.get(name)
+        let file = null
+        try { file = options.resolveImport(imp.stmt.source.value, id) } catch { file = null }
+        const mod = file ? readZodModule(file, parse) : null
+        if (mod && mod.exports.has(imp.imported)) {
+          const src = schemaSource(mod.exports.get(imp.imported), mod, mod.code, true)
+          const zm = src ? zodFor(file, mod.zod.source, mod.zod.kind) : null
+          if (zm) from = { z: zm, local: mod.zod.local, text: src.text, names: [], imp: { stmt: imp.stmt, sp: imp.sp, name } }
+        }
+      }
+      if (!from) continue
       let plan = null; let ir = null
       try {
-        const schema = new Function(zodFile.zod.local, src.text)(z)
+        const schema = new Function(from.local, from.text)(from.z)
         if (!schema || !schema._zod) continue
         plan = planZod(schema)
         const check = new ata.Validator(plan.json, { richErrors: false })
@@ -1051,22 +1072,25 @@ export function compileAway(code, id, ata, options) {
         ir = irFor(plan.json, { richErrors: false }, false)
       } catch { continue }
       if (!ir) continue
-      found.push({ call, names: src.names, plan, ir })
+      found.push({ call, names: from.names, imp: from.imp, plan, ir })
     }
-    // A constant something else uses as a value cannot go, and neither can a
-    // call whose schema is made of it.
+    // A constant or an import something else in the file uses as a value
+    // cannot go, and neither can a call whose schema it is.
     let take = found
-    for (;;) {
+    const state = () => {
       const names = new Set(take.flatMap((f) => f.names))
       const removed = new Set([...names].map((n) => zodFile.consts.get(n).stmt))
-      const uses = usesOf(ast, names, removed, new Set(take.map((f) => f.call)))
-      const kept = take.filter((f) => f.names.every((n) => uses.get(n).values === 0 && declared.get(n) === 1))
+      const calls = new Set(take.map((f) => f.call))
+      return { names, removed, calls, uses: usesOf(ast, new Set([...names, ...take.filter((f) => f.imp).map((f) => f.imp.name)]), removed, calls) }
+    }
+    for (;;) {
+      const { uses } = state()
+      const kept = take.filter((f) => f.names.every((n) => uses.get(n).values === 0 && declared.get(n) === 1) && (!f.imp || uses.get(f.imp.name).values === 0))
       if (kept.length === take.length) break
       take = kept
     }
     if (take.length) {
-      const names = new Set(take.flatMap((f) => f.names))
-      const removed = new Set([...names].map((n) => zodFile.consts.get(n).stmt))
+      const { removed, calls, uses } = state()
       const lit = (v) => JSON.stringify(v).replace(/[\u2028\u2029]/g, (c) => c === '\u2028' ? '\\u2028' : '\\u2029')
       for (const f of take) {
         const index = modules.length
@@ -1076,13 +1100,27 @@ export function compileAway(code, id, ata, options) {
         zodDone++
       }
       for (const stmt of removed) s.remove(stmt.start, stmt.end)
+      // An imported schema: its name leaves the import, or stays as a type
+      // where the file still infers one from it. A statement left with only
+      // types becomes a type import, so the module is not loaded for them.
+      const byStmt = new Map()
+      for (const f of take) if (f.imp) { if (!byStmt.has(f.imp.stmt)) byStmt.set(f.imp.stmt, new Map()); byStmt.get(f.imp.stmt).set(f.imp.sp, uses.get(f.imp.name).types > 0) }
+      for (const [stmt, taken] of byStmt) {
+        if (!stmt.specifiers.every((sp) => sp.type === 'ImportSpecifier')) continue
+        const kept = stmt.specifiers.filter((sp) => !taken.has(sp) || taken.get(sp)).map((sp) => { const imported = sp.imported.name || JSON.stringify(sp.imported.value); return { type: taken.has(sp) || sp.importKind === 'type', text: imported === sp.local.name ? imported : `${imported} as ${sp.local.name}` } })
+        if (kept.length === 0) { s.remove(stmt.start, stmt.end); continue }
+        const allTypes = kept.every((k) => k.type)
+        s.overwrite(stmt.start, stmt.end, `import ${allTypes ? 'type ' : ''}{ ${kept.map((k) => (k.type && !allTypes ? 'type ' : '') + k.text).join(', ')} } from ${code.slice(stmt.source.start, stmt.source.end)}`)
+      }
       // zod's import: gone where the file no longer names it, a type import
       // where only types do.
-      const left = usesOf(ast, new Set([zodFile.zod.local, zodFile.resolver.local]), removed, new Set(take.map((f) => f.call)))
-      const zu = left.get(zodFile.zod.local)
-      if (zu.values === 0 && declared.get(zodFile.zod.local) === 1) {
-        if (zu.types === 0) s.remove(zodFile.zod.stmt.start, zodFile.zod.stmt.end)
-        else s.overwrite(zodFile.zod.stmt.start, zodFile.zod.stmt.start + 6, 'import type')
+      const left = usesOf(ast, new Set([zodFile.resolver.local, ...(zodFile.zod ? [zodFile.zod.local] : [])]), removed, calls)
+      if (zodFile.zod) {
+        const zu = left.get(zodFile.zod.local)
+        if (zu.values === 0 && declared.get(zodFile.zod.local) === 1) {
+          if (zu.types === 0) s.remove(zodFile.zod.stmt.start, zodFile.zod.stmt.end)
+          else s.overwrite(zodFile.zod.stmt.start, zodFile.zod.stmt.start + 6, 'import type')
+        }
       }
       const ru = left.get(zodFile.resolver.local)
       if (ru.values === 0 && ru.types === 0 && zodFile.resolver.stmt.specifiers.length === 1) s.remove(zodFile.resolver.stmt.start, zodFile.resolver.stmt.end)

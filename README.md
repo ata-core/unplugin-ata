@@ -387,6 +387,13 @@ beyond the home page, gzipped: 43.5 KB as written and 15.0 KB through the
 plugin under Turbopack, 37.3 KB and 15.6 KB under webpack. react-hook-form
 alone is 12.3 KB.
 
+The schema can also come from another module of the project, imported by
+name (`import { formSchema } from '@/lib/schemas'`). That module is read as
+text and never run: it has to import zod under one name and build the schema
+from zod and its own constants. A module that builds it from another module's
+parts, or with a function, keeps the call. Under webpack and Rspack this
+needs the build's source scan to have finished, which it has from 0.17.0.
+
 Nothing is replaced on trust. Before a call is replaced, the build runs the
 written check beside the real schema on documents made for that form (each
 field missing, and holding each of some thirty values, and several fields
@@ -400,8 +407,7 @@ Carried: an object of strings (`min`, `max`, `length`, `email`, `regex`,
 fields and nested objects, with zod 4. Not carried, so the call stays as
 written and zod stays on that page: arrays, unions, `nullable`, `url`,
 `refine`, `transform`, `default`, `coerce`, `trim`, strict objects, a schema
-imported from another module, a schema exported or used elsewhere in the file
-as a value, a schema built from anything but zod and constants of the file,
+exported from the file of the call or used elsewhere in it as a value, a schema built from anything but zod and constants of the file,
 and a call that passes options. An application that changes zod's messages
 as a whole (`z.config(...)`, a locale, a global error map) gets no call
 replaced, since the build would learn messages the page does not show.

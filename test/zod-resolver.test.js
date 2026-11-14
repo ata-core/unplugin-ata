@@ -111,8 +111,9 @@ describe('zodResolver compiled away: a build', () => {
   let dir
   before(async () => { dir = await fs.mkdtemp(path.join(here, 'fixtures', 'zod-resolver-')) })
   after(async () => { if (dir) await fs.rm(dir, { recursive: true, force: true }) })
-  const build = async (name, source) => {
+  const build = async (name, source, others = {}) => {
     const esbuild = await import('esbuild')
+    for (const [n, text] of Object.entries(others)) await fs.writeFile(path.join(dir, n), text)
     await fs.writeFile(path.join(dir, name), source)
     const out = path.join(dir, name.replace(/\.\w+$/, '.out.mjs'))
     await esbuild.build({ absWorkingDir: dir, entryPoints: [name], bundle: true, format: 'esm', platform: 'node', outfile: out, logLevel: 'silent', plugins: [esbuildPlugin({ verify: false, report: false })] })
@@ -140,6 +141,32 @@ describe('zodResolver compiled away: a build', () => {
     const { text, mod } = await build('typed.ts', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst formSchema = z.object({\n  ${FIELDS}\n})\nexport type FormValues = z.infer<typeof formSchema>\nexport const resolver = zodResolver(formSchema)\nexport const first = (v: FormValues): string => v.username\n`)
     assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
     await same(mod.resolver)
+  })
+  const SCHEMAS = `import { z } from 'zod'\nconst roles = ['admin', 'user']\nexport const formSchema = z.object({\n  username: z.string().min(2, { message: 'Username must be at least 2 characters.' }).max(30),\n  email: z.string().email('Please enter a valid email.'),\n  age: z.number().int().min(18).optional(),\n  role: z.enum(roles),\n})\nexport type FormValues = z.infer<typeof formSchema>\nconst other = z.object({ q: z.string() })\nexport { other as searchSchema }\n`
+  it('reads a schema the file imports from another module of the project', async () => {
+    const { text, mod } = await build('imports.ts', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { formSchema, type FormValues } from './schemas-a'\nexport const resolver = zodResolver(formSchema)\nexport const first = (v: FormValues): string => v.username\n`, { 'schemas-a.ts': SCHEMAS })
+    assert.match(text, /__ataZodResolver/)
+    assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
+    await same(mod.resolver)
+  })
+  it('keeps a type the file infers from an imported schema, and reads an export written as a list', async () => {
+    const { text, mod } = await build('imports-typed.ts', `import { zodResolver } from '@hookform/resolvers/zod'\nimport type { z } from 'zod'\nimport { formSchema, searchSchema } from './schemas-b'\ntype Values = z.infer<typeof formSchema>\nexport const resolver = zodResolver(formSchema)\nexport const search = zodResolver(searchSchema)\nexport const first = (v: Values): string => v.username\n`, { 'schemas-b.ts': SCHEMAS })
+    assert.equal((text.match(/__ataZodResolver\(/g) || []).length, 2)
+    assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
+    await same(mod.resolver)
+    const real = zodResolver(z.object({ q: z.string() }))
+    for (const d of [{ q: 'a' }, {}, { q: 1, x: 2 }]) assert.equal(show(await mod.search(clone(d), undefined, OPTS[0])), show(await real(clone(d), undefined, OPTS[0])))
+  })
+  it('leaves the call where the imported schema is also used as a value, or its module is made of more than zod', async () => {
+    for (const [name, source, others] of [
+      ['imports-used.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { formSchema } from './schemas-c.js'\nexport const resolver = zodResolver(formSchema)\nexport const parse = (v) => formSchema.safeParse(v)\n`, { 'schemas-c.js': SCHEMAS.replace(/export type[^\n]*\n/, '') }],
+      ['imports-parts.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { formSchema } from './schemas-d.js'\nexport const resolver = zodResolver(formSchema)\n`, { 'parts-d.js': `import { z } from 'zod'\nexport const email = z.string().email()\n`, 'schemas-d.js': `import { z } from 'zod'\nimport { email } from './parts-d.js'\nexport const formSchema = z.object({ email })\n` }],
+      ['imports-fn.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { formSchema } from './schemas-e.js'\nexport const resolver = zodResolver(formSchema)\n`, { 'schemas-e.js': `import { z } from 'zod'\nconst make = () => z.object({ a: z.string() })\nexport const formSchema = make()\n` }],
+    ]) {
+      const { text } = await build(name, source, others)
+      assert.doesNotMatch(text, /__ataZodResolver/, `${name}: the call was replaced`)
+      assert.match(text, HAS_ZOD, `${name}: zod left a bundle that still needs it`)
+    }
   })
   it('replaces nothing in an application that sets zod\'s locale or a global error map', async () => {
     const other = await fs.mkdtemp(path.join(here, 'fixtures', 'zod-resolver-locale-'))

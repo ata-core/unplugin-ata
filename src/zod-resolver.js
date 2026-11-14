@@ -220,13 +220,19 @@ const isName = (n, up) => {
   return true
 }
 
-// The imports and constants a zodResolver rewrite reads: zod under one local
-// name (`import { z }`, `import * as z` or `import z`, alone in its
-// statement), zodResolver by name, and the file's top-level `const x = ...`
-// statements of one declarator that are not exported.
-export function readZodFile (ast) {
+// What a zodResolver rewrite reads of a file: zod under one local name
+// (`import { z }`, `import * as z` or `import z`, alone in its statement),
+// zodResolver by name, the top-level `const x = ...` statements of one
+// declarator, and the names the file exports them under.
+export function readZodFile (ast, needResolver = true) {
   let zod = null; let resolver = null
-  const consts = new Map()
+  const consts = new Map(); const exports = new Map()
+  const one = (stmt, decl, exported) => {
+    if (decl.type !== 'VariableDeclaration' || decl.kind !== 'const' || decl.declarations.length !== 1 || decl.declarations[0].id.type !== 'Identifier' || !decl.declarations[0].init) return
+    const name = decl.declarations[0].id.name
+    consts.set(name, { stmt, init: decl.declarations[0].init, exported })
+    if (exported) exports.set(name, name)
+  }
   for (const stmt of ast.program.body) {
     if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type') {
       if (stmt.source.value === ZOD_RESOLVERS) {
@@ -236,24 +242,42 @@ export function readZodFile (ast) {
         const kind = sp.type === 'ImportNamespaceSpecifier' ? 'namespace' : sp.type === 'ImportDefaultSpecifier' ? 'default' : sp.importKind !== 'type' && (sp.imported.name || sp.imported.value) === 'z' ? 'named' : null
         if (kind) zod = { stmt, local: sp.local.name, kind, source: stmt.source.value }
       }
-    } else if (stmt.type === 'VariableDeclaration' && stmt.kind === 'const' && stmt.declarations.length === 1 && stmt.declarations[0].id.type === 'Identifier' && stmt.declarations[0].init) {
-      consts.set(stmt.declarations[0].id.name, { stmt, init: stmt.declarations[0].init })
+    } else if (stmt.type === 'VariableDeclaration') one(stmt, stmt, false)
+    else if (stmt.type === 'ExportNamedDeclaration' && stmt.exportKind !== 'type') {
+      if (stmt.declaration) one(stmt, stmt.declaration, true)
+      else if (!stmt.source) for (const sp of stmt.specifiers) if (sp.type === 'ExportSpecifier' && sp.exportKind !== 'type' && sp.local.type === 'Identifier') { exports.set(sp.exported.name || sp.exported.value, sp.local.name); const c = consts.get(sp.local.name); if (c) c.exported = true }
     }
   }
-  return zod && resolver ? { zod, resolver, consts } : null
+  // `export { x }` written before the constant it names.
+  for (const local of exports.values()) { const c = consts.get(local); if (c) c.exported = true }
+  return resolver || !needResolver ? { zod, resolver, consts, exports } : null
+}
+
+// A module a form imports its schema from, read as text and never run: its
+// zod import, constants and exports, with the source they are cut from.
+export function readZodModule (file, parse) {
+  let code
+  try { if (fs.statSync(file).size > 1 << 18) return null; code = fs.readFileSync(file, 'utf8') } catch { return null }
+  if (!code.includes('zod')) return null
+  let ast
+  try { ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false }) } catch { return null }
+  const info = readZodFile(ast, false)
+  return info.zod ? { ...info, code } : null
 }
 
 // The source that builds the schema `name` stands for, as the body of a
 // function of zod's local name, with the constants it is made of before it;
 // null where it names anything else (a value from outside, a function, a
 // TypeScript expression): then it cannot be built outside the file.
-export function schemaSource (name, info, code) {
+export function schemaSource (name, info, code, exportedToo = false) {
   const order = []; const seen = new Set()
   const visit = (nm) => {
     if (seen.has(nm)) return true
     seen.add(nm)
     const c = info.consts.get(nm)
-    if (!c) return false
+    // In the file of the call an exported constant has readers the build
+    // does not see, so it cannot be taken out and is not read.
+    if (!c || (c.exported && !exportedToo)) return false
     let ok = true
     walk(c.init, (n, up) => {
       if (!ok) return
