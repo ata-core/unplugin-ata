@@ -24,6 +24,7 @@ const SOURCE = /\.[cm]?[jt]sx?$/
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.next', '.nuxt', '.output', '.svelte-kit', '.turbo', '.cache'])
 const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/
 const COMPONENT = /\.(?:vue|svelte|astro)$/
+const ZOD_CONFIGURED = /\.config\s*\(\s*[^)\s]|\bsetErrorMap\b|zod\/(?:v4\/)?locales|\blocales\s*\.\s*[a-zA-Z]+\s*\(/
 function scanSources(root) {
   const out = []
   const imports = new Map()
@@ -40,6 +41,10 @@ function scanSources(root) {
       let code
       try { if (fs.statSync(p).size > 1 << 20) continue; code = fs.readFileSync(p, 'utf8') } catch { continue }
       imports.set(path.resolve(p), importsOf(code))
+      // zod's messages changed for the whole application (a locale, a global
+      // error map): what the build learns from zod is then not what the page
+      // would say, so no zodResolver call is replaced (src/zod-resolver.js).
+      if (!out.zodConfigured && code.includes('zod') && ZOD_CONFIGURED.test(code)) out.zodConfigured = true
       if (source && code.includes('ata-validator')) out.push([code, p])
     }
   }
@@ -159,7 +164,8 @@ export const unpluginFactory = (userOptions = {}) => {
       // plans for one shared interpreter where that makes what a page loads
       // smaller (src/compile-away.js tableFormsPay), compiled code otherwise.
       // A file the scan did not see keeps compiled code.
-      session.tableDecision = false
+      session.zodConfigured = userOptions.compileAway !== false && userOptions.zodResolver !== false ? scanOnce(session).zodConfigured === true : false
+    session.tableDecision = false
       const apiForTable = userOptions.compileAway !== false && userOptions.ir !== false ? await session.api() : null
       if (apiForTable !== null && (userOptions.ir === true || apiForTable.irDefault) && (userOptions.table === undefined || userOptions.table === 'auto')) {
         const api = apiForTable
@@ -194,7 +200,7 @@ export const unpluginFactory = (userOptions = {}) => {
     },
 
     async transform(code, id) {
-      if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
+      if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata') && !code.includes('@hookform/resolvers/zod')) return null
       const api = await session.api()
       if (!api.compiledModuleFor) {
         // Only a caller who asked for it hears that it could not happen; on
@@ -215,7 +221,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { table: tableOn, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured !== true, table: tableOn, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced : 0, kinds: out ? out.kinds : null, kept })
       return out ? { code: out.code, map: out.map } : null
     },

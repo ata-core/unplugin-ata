@@ -265,6 +265,17 @@ async function loadAta() {
   // package's export map gives for ./ata-validator must have it: a bundler
   // takes the `import` one, `require` resolves the other, and a copy where
   // only one of them has it would build an import that does not exist.
+  // Whether a file resolves what a replaced zodResolver call imports.
+  const zodReady = new Map()
+  const zodResolverReady = (file) => {
+    const dir = path.dirname(file)
+    let has = zodReady.get(dir)
+    if (has === undefined) {
+      try { const req = createRequire(file); req.resolve('@hookform/resolvers'); req.resolve('react-hook-form'); has = true } catch { has = false }
+      zodReady.set(dir, has)
+    }
+    return has
+  }
   const resolverCopies = new Map()
   const compiledResolver = (file) => {
     if (!compiledOrder) return false
@@ -323,6 +334,7 @@ async function loadAta() {
   return {
     ...api,
     compiledResolver,
+    zodResolverReady,
     rjsfCompiler,
     compiledSharedErrors,
     // The Bun target and the verification, from ata-validator 1.61.0.
