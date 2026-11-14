@@ -496,10 +496,10 @@ const noJson = (methods) => ![...methods].some((m) => JSON_METHODS.has(m))
 // module's gzipped saving as this transform sees it (unminified source), set
 // from minified esbuild bundles of one schema each, for a browser and for a
 // Node target, of two kinds of schema: fields described at length, and bare
-// fields. Where the runtime starts to pay differs by kind and target (about
-// 41000 for described fields in a browser, about 60000 for bare ones in Node,
-// which carries the IDNA tables the browser build leaves out), so the bar is
-// above both. It was 24000, set when the runtime was smaller; by ata-validator
+// fields. Where the runtime starts to pay differs by kind and target: between
+// 37481 and 42436 for described fields in a browser, between 56147 and 74091
+// for bare ones in Node, which carries the IDNA tables the browser build
+// leaves out. The bar is above every loss measured. It was 24000, set when the runtime was smaller; by ata-validator
 // 1.63.1 that wrote compact modules 4 to 7 KB larger than the self-contained
 // ones for schemas between the two figures. test/shared-errors-cost.test.js
 // holds the bar to real bundles. Below it, a schema stays self-contained;
