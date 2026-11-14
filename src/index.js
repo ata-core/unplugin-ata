@@ -118,63 +118,73 @@ function cachedApi(session, api) {
 export const unpluginFactory = (userOptions = {}) => {
   const session = createSession(userOptions)
 
+  // What a build decides before its first file: schemas compiled, and the
+  // `sharedErrors` and `table` choices for what loads together.
+  const prepare = async () => {
+    const { files, results } = await session.compileAll()
+    const changed = results.filter((r) => r.changed).length
+    session.logger?.info?.(`[unplugin-ata] compiled ${files.length} schema(s), ${changed} file(s) written`)
+    // sharedErrors 'auto' decides for what loads together, not file by file
+    // and not for the project: the sources are scanned once here, and a
+    // file takes the runtime where every page that loads it saves more by
+    // the runtime than the runtime costs (src/first-load.js).
+    session.sharedDecision = undefined
+    session.sharedFiles = null
+    session.tableFiles = null
+    clearSizes()
+    session.typeSchemas.reset()
+    session.scanned = null
+    session.scannedSources = null
+    session.loads = null
+    const resolved = (ids) => ids.map((id) => path.resolve(id))
+    if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
+      const api = await session.api()
+      if (api.compiledModuleFor && api.compiledSharedErrors) {
+        const sources = scanOnce(session)
+        const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
+        const savings = await sharedSavings(sources, cachedApi(session, api))
+        const kept = await perLoad(session.loads, new Set(resolved([...savings.keys()])), async (files) => sharedPays(savings, files.map((f) => byId.get(f))).pays)
+        // A file where the runtime does not pay skips the compact attempt.
+        // A file the scan did not see (outside the root) decides alone, by
+        // the per-module rule, which never makes a bundle bigger either.
+        session.sharedFiles = kept
+        session.sharedDecision = kept.size > 0 ? 'smaller' : false
+        const all = sharedPays(savings)
+        if (all.calls > 0) session.logger?.info?.(`[unplugin-ata] ${all.calls} validator(s) can share one error runtime: ${kept.size ? `shared in ${kept.size} of ${savings.size} file(s), where what loads together saves more than its cost` : 'kept self-contained'}`)
+      }
+    }
+    // `table` 'auto' decides the same way: the IR's validators go out as
+    // plans for one shared interpreter where that makes what a page loads
+    // smaller (src/compile-away.js tableFormsPay), compiled code otherwise.
+    // A file the scan did not see keeps compiled code.
+    session.tableDecision = false
+    const apiForTable = userOptions.compileAway !== false && userOptions.ir !== false ? await session.api() : null
+    if (apiForTable !== null && (userOptions.ir === true || apiForTable.irDefault) && (userOptions.table === undefined || userOptions.table === 'auto')) {
+      const api = apiForTable
+      if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
+        const sources = scanOnce(session)
+        const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
+        const forms = tableForms(sources, cachedApi(session, api))
+        const kept = await perLoad(session.loads, new Set(resolved([...forms.keys()])), async (files) => (await tableFormsPay(forms, files.map((f) => byId.get(f)))).pays)
+        session.tableFiles = kept
+        session.tableDecision = kept.size > 0
+        let calls = 0
+        for (const f of forms.values()) calls += f.calls
+        if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) could be table plans: ${kept.size ? `plans in ${kept.size} of ${forms.size} file(s), where what loads together outweighs the interpreter` : 'compiled code'}`)
+      }
+    }
+  }
+
   return {
     name: 'unplugin-ata',
     enforce: 'pre',
 
-    async buildStart() {
-      const { files, results } = await session.compileAll()
-      const changed = results.filter((r) => r.changed).length
-      session.logger?.info?.(`[unplugin-ata] compiled ${files.length} schema(s), ${changed} file(s) written`)
-      // sharedErrors 'auto' decides for what loads together, not file by file
-      // and not for the project: the sources are scanned once here, and a
-      // file takes the runtime where every page that loads it saves more by
-      // the runtime than the runtime costs (src/first-load.js).
-      session.sharedDecision = undefined
-      session.sharedFiles = null
-      session.tableFiles = null
-      clearSizes()
-      session.typeSchemas.reset()
-      session.scanned = null
-      session.scannedSources = null
-      session.loads = null
-      const resolved = (ids) => ids.map((id) => path.resolve(id))
-      if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
-        const api = await session.api()
-        if (api.compiledModuleFor && api.compiledSharedErrors) {
-          const sources = scanOnce(session)
-          const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
-          const savings = await sharedSavings(sources, cachedApi(session, api))
-          const kept = await perLoad(session.loads, new Set(resolved([...savings.keys()])), async (files) => sharedPays(savings, files.map((f) => byId.get(f))).pays)
-          // A file where the runtime does not pay skips the compact attempt.
-          // A file the scan did not see (outside the root) decides alone, by
-          // the per-module rule, which never makes a bundle bigger either.
-          session.sharedFiles = kept
-          session.sharedDecision = kept.size > 0 ? 'smaller' : false
-          const all = sharedPays(savings)
-          if (all.calls > 0) session.logger?.info?.(`[unplugin-ata] ${all.calls} validator(s) can share one error runtime: ${kept.size ? `shared in ${kept.size} of ${savings.size} file(s), where what loads together saves more than its cost` : 'kept self-contained'}`)
-        }
-      }
-      // `table` 'auto' decides the same way: the IR's validators go out as
-      // plans for one shared interpreter where that makes what a page loads
-      // smaller (src/compile-away.js tableFormsPay), compiled code otherwise.
-      // A file the scan did not see keeps compiled code.
-      session.tableDecision = false
-      const apiForTable = userOptions.compileAway !== false && userOptions.ir !== false ? await session.api() : null
-      if (apiForTable !== null && (userOptions.ir === true || apiForTable.irDefault) && (userOptions.table === undefined || userOptions.table === 'auto')) {
-        const api = apiForTable
-        if (api.ir && typeof api.ir.tableModule === 'function' && api.compiledModuleFor) {
-          const sources = scanOnce(session)
-          const byId = new Map(sources.map(([, id]) => [path.resolve(id), id]))
-          const forms = tableForms(sources, cachedApi(session, api))
-          const kept = await perLoad(session.loads, new Set(resolved([...forms.keys()])), async (files) => (await tableFormsPay(forms, files.map((f) => byId.get(f)))).pays)
-          session.tableFiles = kept
-          session.tableDecision = kept.size > 0
-          let calls = 0
-          for (const f of forms.values()) calls += f.calls
-          if (calls > 0) session.logger?.info?.(`[unplugin-ata] ${calls} validator(s) could be table plans: ${kept.size ? `plans in ${kept.size} of ${forms.size} file(s), where what loads together outweighs the interpreter` : 'compiled code'}`)
-        }
-      }
+    // webpack and Rspack run this beside the build of the entries (unplugin
+    // taps `make`, a parallel hook), so a file can reach transform() while
+    // the choices are still being made. transform() waits on `ready`.
+    buildStart() {
+      session.ready = prepare()
+      return session.ready
     },
 
     async watchChange(id) {
@@ -195,6 +205,7 @@ export const unpluginFactory = (userOptions = {}) => {
 
     async transform(code, id) {
       if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
+      if (session.ready) await session.ready
       const api = await session.api()
       if (!api.compiledModuleFor) {
         // Only a caller who asked for it hears that it could not happen; on

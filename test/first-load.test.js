@@ -12,6 +12,7 @@ import zlib from 'node:zlib'
 
 import { importsOf, resolverFor, firstLoads, perLoad, htmlScripts } from '../src/first-load.js'
 import esbuildPlugin from '../src/esbuild.js'
+import { unpluginFactory } from '../src/index.js'
 import { __internal } from '../src/core.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -92,6 +93,11 @@ describe('first loads: what a build takes', { skip: !(ata.ir && ata.ir.tableModu
     // One application whose entry loads four forms, each in its own file.
     for (let i = 0; i < 4; i++) await fs.writeFile(path.join(dir, 'spa', 'forms', `f${i}.js`), `import { Validator } from 'ata-validator'\nconst v = ${form(10 + i, false)}\nexport const run${i} = (d) => v.validate(d)\n`)
     for (let i = 0; i < 4; i++) await fs.writeFile(path.join(dir, 'spa', 'forms', `f${i}.stories.js`), `import { run${i} } from './f${i}.js'\nexport default { run: run${i} }\n`)
+    // The same application without the stories, for a build whose entries
+    // the plugin is not told.
+    await fs.mkdir(path.join(dir, 'app', 'forms'), { recursive: true })
+    for (let i = 0; i < 4; i++) await fs.writeFile(path.join(dir, 'app', 'forms', `f${i}.js`), `import { Validator } from 'ata-validator'\nconst v = ${form(20 + i, false)}\nexport const run${i} = (d) => v.validate(d)\n`)
+    await fs.writeFile(path.join(dir, 'app', 'main.js'), `${[0, 1, 2, 3].map((i) => `export { run${i} } from './forms/f${i}.js'`).join('\n')}\n`)
     await fs.writeFile(path.join(dir, 'spa', 'main.js'), `${[0, 1, 2, 3].map((i) => `export { run${i} } from './forms/f${i}.js'`).join('\n')}\n`)
   })
   after(async () => { if (dir) await fs.rm(dir, { recursive: true, force: true }) })
@@ -118,5 +124,21 @@ describe('first loads: what a build takes', { skip: !(ata.ir && ata.ir.tableModu
     const plans = await bundle(['spa/main.js'], { table: true })
     assert.equal(auto['main.js'], plans['main.js'])
     assert.ok(gz(plans['main.js']) < gz(modules['main.js']), `${gz(plans['main.js'])} bytes gzipped as plans against ${gz(modules['main.js'])}`)
+  })
+  // webpack and Rspack start building the entries while buildStart is still
+  // running, so the first files can arrive before the choice is made.
+  it('a file that reaches transform before buildStart has finished gets the same choice', async () => {
+    const file = path.join(dir, 'app', 'forms', 'f0.js')
+    const code = await fs.readFile(file, 'utf8')
+    const hooks = unpluginFactory({ root: path.join(dir, 'app'), verify: false, report: false })
+    const started = hooks.buildStart.call({})
+    const early = await hooks.transform.call({}, code, file)
+    await started
+    const late = await hooks.transform.call({}, code, file)
+    const off = unpluginFactory({ root: path.join(dir, 'app'), verify: false, report: false, table: false })
+    await off.buildStart.call({})
+    const modules = await off.transform.call({}, code, file)
+    assert.notEqual(late.code, modules.code, 'four forms loaded together are written as plans')
+    assert.equal(early.code, late.code)
   })
 })
