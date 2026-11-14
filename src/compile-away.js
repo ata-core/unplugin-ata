@@ -64,6 +64,7 @@ import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
 import { readsOnlyPlainFields } from './error-use.js'
+import { ZOD_RESOLVERS, ZOD_RUNTIME, ZOD_RUNTIME_IMPORTS, planZod, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
@@ -813,7 +814,7 @@ export function compileAway(code, id, ata, options) {
   }
   const { compiledModuleFor, compiledSchemaFor } = ata
   const supportedOptions = Array.isArray(ata.compiledOptions) ? ata.compiledOptions : []
-  if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata')) return null
+  if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata') && !code.includes(ZOD_RESOLVERS)) return null
   // The scan keeps the tree it parsed for the transform, which takes it and
   // lets it go, so a long dev session holds no old versions of a file.
   let ast = asts.get(code)
@@ -884,7 +885,10 @@ export function compileAway(code, id, ata, options) {
     }
     if (formNames.size === 0) rjsfName = null
   }
-  if (!validatorName && !resolverName && !rjsfName && !schemaOfName) return null
+  // zodResolver(schema) with zod under one name: read where the IR writes the
+  // check and the file resolves what the written resolver imports.
+  const zodFile = options && options.zodResolver !== false && options.ir && ata.ir && ata.Validator && ata.zodResolverReady && ata.zodResolverReady(id) ? readZodFile(ast) : null
+  if (!validatorName && !resolverName && !rjsfName && !schemaOfName && !zodFile) return null
   let tName = null
   for (const stmt of ast.program.body) {
     if (stmt.type !== 'ImportDeclaration' || stmt.source.value !== 'ata-validator/t' || stmt.importKind === 'type') continue
@@ -933,7 +937,7 @@ export function compileAway(code, id, ata, options) {
       typeSchemas.set(call, typeSchema(id, t.typeName.name))
     }
   }
-  if (!validatorName && !resolverName && !rjsfName && typeSchemas.size === 0) return null
+  if (!validatorName && !resolverName && !rjsfName && typeSchemas.size === 0 && !zodFile) return null
   const consumers = new Set([validatorName, resolverName].filter(Boolean))
   // The rjsf forms that can take a precompiled validator: `validator={<the
   // import>}` and `schema={...}` on an rjsf form element without spread
@@ -1065,6 +1069,109 @@ export function compileAway(code, id, ata, options) {
       s.overwrite(call.start, call.end, `__ataCompiledResolver(__ataCompiled${index}${extra})`)
       resolverCalls.add(call)
       done.add(call)
+    }
+  }
+  // zodResolver(schema): the schema is built here with the application's own
+  // zod, a plan is made from it and held to zod on documents made for it
+  // (src/zod-resolver.js), and only then is the call replaced. The constants
+  // the schema is written in go with it, where nothing else in the file uses
+  // them as values, so zod leaves the bundle; where something does, the call
+  // stays as written.
+  let zodDone = 0
+  if (zodFile && !virtual) {
+    const zHere = zodFile.zod ? zodFor(id, zodFile.zod.source, zodFile.zod.kind) : null
+    // A schema the file imports by name is read from the module it comes
+    // from, as text: the module is not run, so it costs the build nothing but
+    // a parse and has no effect on it. It has to be a file of the project
+    // the build's own resolver finds, with zod under one name, and the
+    // schema has to be made of zod and constants of that module.
+    const named = new Map()
+    for (const stmt of ast.program.body) if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type') for (const sp of stmt.specifiers) if (sp.type === 'ImportSpecifier' && sp.importKind !== 'type') named.set(sp.local.name, { stmt, sp, imported: sp.imported.name || sp.imported.value })
+    const found = []
+    for (const r of refs) {
+      if (r.node.name !== zodFile.resolver.local || declared.get(zodFile.resolver.local) !== 1) continue
+      const call = r.parent
+      if (!call || call.type !== 'CallExpression' || r.key !== 'callee' || call.arguments.length !== 1 || call.arguments[0].type !== 'Identifier') continue
+      const name = call.arguments[0].name
+      if (declared.get(name) !== 1) continue
+      let from = null
+      if (zodFile.consts.has(name)) {
+        const src = zHere ? schemaSource(name, zodFile, code) : null
+        if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
+      } else if (named.has(name) && options.resolveImport) {
+        const imp = named.get(name)
+        let file = null
+        try { file = options.resolveImport(imp.stmt.source.value, id) } catch { file = null }
+        const mod = file ? readZodModule(file, parse) : null
+        if (mod && mod.exports.has(imp.imported)) {
+          const src = schemaSource(mod.exports.get(imp.imported), mod, mod.code, true)
+          const zm = src ? zodFor(file, mod.zod.source, mod.zod.kind) : null
+          if (zm) from = { z: zm, local: mod.zod.local, text: src.text, names: [], imp: { stmt: imp.stmt, sp: imp.sp, name } }
+        }
+      }
+      if (!from) continue
+      let plan = null; let ir = null
+      try {
+        const schema = new Function(from.local, from.text)(from.z)
+        if (!schema || !schema._zod) continue
+        plan = planZod(schema)
+        const check = new ata.Validator(plan.json, { richErrors: false })
+        if (selfCheck(schema, plan, (d) => check.validate(d)) !== null) continue
+        ir = irFor(plan.json, { richErrors: false }, false)
+      } catch { continue }
+      if (!ir) continue
+      found.push({ call, names: from.names, imp: from.imp, plan, ir })
+    }
+    // A constant or an import something else in the file uses as a value
+    // cannot go, and neither can a call whose schema it is.
+    let take = found
+    const state = () => {
+      const names = new Set(take.flatMap((f) => f.names))
+      const removed = new Set([...names].map((n) => zodFile.consts.get(n).stmt))
+      const calls = new Set(take.map((f) => f.call))
+      return { names, removed, calls, uses: usesOf(ast, new Set([...names, ...take.filter((f) => f.imp).map((f) => f.imp.name)]), removed, calls) }
+    }
+    for (;;) {
+      const { uses } = state()
+      const kept = take.filter((f) => f.names.every((n) => uses.get(n).values === 0 && declared.get(n) === 1) && (!f.imp || uses.get(f.imp.name).values === 0))
+      if (kept.length === take.length) break
+      take = kept
+    }
+    if (take.length) {
+      const { removed, calls, uses } = state()
+      const lit = (v) => JSON.stringify(v).replace(/[\u2028\u2029]/g, (c) => c === '\u2028' ? '\\u2028' : '\\u2029')
+      for (const f of take) {
+        const index = modules.length
+        f.ir.place(index, f.ir.src, false)
+        s.overwrite(f.call.start, f.call.end, `__ataZodResolver(__ataCompiled${index}, ${lit(f.plan.table)}, ${lit(f.plan.paths)})`)
+        done.add(f.call)
+        zodDone++
+      }
+      for (const stmt of removed) s.remove(stmt.start, stmt.end)
+      // An imported schema: its name leaves the import, or stays as a type
+      // where the file still infers one from it. A statement left with only
+      // types becomes a type import, so the module is not loaded for them.
+      const byStmt = new Map()
+      for (const f of take) if (f.imp) { if (!byStmt.has(f.imp.stmt)) byStmt.set(f.imp.stmt, new Map()); byStmt.get(f.imp.stmt).set(f.imp.sp, uses.get(f.imp.name).types > 0) }
+      for (const [stmt, taken] of byStmt) {
+        if (!stmt.specifiers.every((sp) => sp.type === 'ImportSpecifier')) continue
+        const kept = stmt.specifiers.filter((sp) => !taken.has(sp) || taken.get(sp)).map((sp) => { const imported = sp.imported.name || JSON.stringify(sp.imported.value); return { type: taken.has(sp) || sp.importKind === 'type', text: imported === sp.local.name ? imported : `${imported} as ${sp.local.name}` } })
+        if (kept.length === 0) { s.remove(stmt.start, stmt.end); continue }
+        const allTypes = kept.every((k) => k.type)
+        s.overwrite(stmt.start, stmt.end, `import ${allTypes ? 'type ' : ''}{ ${kept.map((k) => (k.type && !allTypes ? 'type ' : '') + k.text).join(', ')} } from ${code.slice(stmt.source.start, stmt.source.end)}`)
+      }
+      // zod's import: gone where the file no longer names it, a type import
+      // where only types do.
+      const left = usesOf(ast, new Set([zodFile.resolver.local, ...(zodFile.zod ? [zodFile.zod.local] : [])]), removed, calls)
+      if (zodFile.zod) {
+        const zu = left.get(zodFile.zod.local)
+        if (zu.values === 0 && declared.get(zodFile.zod.local) === 1) {
+          if (zu.types === 0) s.remove(zodFile.zod.stmt.start, zodFile.zod.stmt.end)
+          else s.overwrite(zodFile.zod.stmt.start, zodFile.zod.stmt.start + 6, 'import type')
+        }
+      }
+      const ru = left.get(zodFile.resolver.local)
+      if (ru.values === 0 && ru.types === 0 && zodFile.resolver.stmt.specifiers.length === 1) s.remove(zodFile.resolver.stmt.start, zodFile.resolver.stmt.end)
     }
   }
   const rjsfDone = []
@@ -1276,6 +1383,7 @@ export function compileAway(code, id, ata, options) {
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (resolverCalls.size) addImport(resolverKind === 'own' ? OWN_RESOLVER : `import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
+  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + ZOD_RUNTIME)
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
