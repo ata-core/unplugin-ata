@@ -231,6 +231,11 @@ export const unpluginFactory = (userOptions = {}) => {
       const mayParse = userOptions.zodSafeParse !== false && code.includes('.safeParse(')
       if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata') && !code.includes('@hookform/resolvers/zod') && !mayParse) return null
       if (session.ready) await session.ready
+      // A module a schema's parts were read from is a dependency of this
+      // file the bundler no longer sees once the import has left it: it is
+      // named to the bundler, so a change to it rebuilds this file in a
+      // watch or dev build.
+      const watchFile = this && typeof this.addWatchFile === 'function' ? (f) => { try { this.addWatchFile(f) } catch {} } : undefined
       // Known only once the build's scan for a zod locale has run.
       const parseOn = mayParse && session.zodConfigured === false
       const api = await session.api()
@@ -253,7 +258,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured === false, zodSafeParse: parseOn, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured === false, zodSafeParse: parseOn, watch: watchFile, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced - (out.zod || 0) : 0, kinds: out ? out.kinds : null, kept, zod: out ? out.zod || 0 : 0, zodParse: out ? out.zodParse || 0 : 0 })
       return out ? { code: out.code, map: out.map } : null
     },

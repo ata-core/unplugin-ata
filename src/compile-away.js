@@ -64,7 +64,8 @@ import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
 import { readsOnlyPlainFields, readsOnlyIssueFields, readsOnlyValid } from './error-use.js'
-import { ZOD_RESOLVERS, zodRuntimeFor, ZOD_RUNTIME_IMPORTS, planZod, parseRefusal, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
+import { workspaceResolve, relativeResolve } from './workspace-resolve.js'
+import { ZOD_RESOLVERS, zodRuntimeFor, ZOD_RUNTIME_IMPORTS, planZod, parseRefusal, selfCheck, zodFor, readZodFile, readModule, schemaSource, usesOf } from './zod-resolver.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
 const NOT_STATIC = Symbol('not static')
@@ -1119,32 +1120,32 @@ export function compileAway(code, id, ata, options) {
     for (const stmt of ast.program.body) if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type') for (const sp of stmt.specifiers) if (sp.type === 'ImportSpecifier' && sp.importKind !== 'type') named.set(sp.local.name, { stmt, sp, imported: sp.imported.name || sp.imported.value })
     const found = []
     // Where a schema's source comes from: the call itself, a constant of
-    // the file, or a module the file imports it from by name.
+    // the file, or a module the file imports it from by name; and the parts
+    // any of those takes from other modules of the project, by name, read as
+    // text through the build's resolver (src/zod-resolver.js schemaSource).
+    // Every module on the way has to build with the same copy of zod.
     const sourceOf = (name, arg) => {
-      let from = null
       const why = {}
-      // Whether an imported name comes from a module that is made with zod.
-      let zodModule = false
-      if (name === null) {
-        // The schema written in the call: zodResolver(z.object({ ... })).
-        const src = zHere ? schemaSource(arg, zodFile, code, false, why) : null
-        if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
-      } else if (zodFile.consts.has(name)) {
-        const src = zHere ? schemaSource(name, zodFile, code, false, why) : null
-        if (src) from = { z: zHere, local: zodFile.zod.local, text: src.text, names: src.names, imp: null }
-      } else if (named.has(name) && options.resolveImport) {
-        const imp = named.get(name)
-        let file = null
-        try { file = options.resolveImport(imp.stmt.source.value, id) } catch { file = null }
-        const mod = file ? readZodModule(file, parse) : null
-        if (!file) why.why = `its module \`${imp.stmt.source.value}\` was not found among the project's files`
-        else if (!mod) why.why = `its module \`${imp.stmt.source.value}\` does not import zod under one name`
-        else if (!mod.exports.has(imp.imported)) why.why = `\`${imp.imported}\` is not a constant \`${imp.stmt.source.value}\` exports`
-        zodModule = !!mod
-        if (mod && mod.exports.has(imp.imported)) {
-          const src = schemaSource(mod.exports.get(imp.imported), mod, mod.code, true, why)
-          const zm = src ? zodFor(file, mod.zod.source, mod.zod.kind) : null
-          if (zm) from = { z: zm, local: mod.zod.local, text: src.text, names: [], imp: { stmt: imp.stmt, sp: imp.sp, name } }
+      const ctx = options.resolveImport ? { resolve: (spec, from) => options.resolveImport(spec, from) || relativeResolve(spec, from) || workspaceResolve(spec, from), read: (file) => { if (typeof options.watch === 'function') options.watch(file); return readModule(file, parse) }, file: id, depth: 0, stack: new Set(), zods: [] } : null
+      const known = name === null || zodFile.consts.has(name) || (ctx !== null && zodFile.imports.has(name))
+      const src = known ? schemaSource(name === null ? arg : name, zodFile, code, false, why, ctx) : null
+      // Whether zod had a part in what was read: a name that comes from a
+      // module with no zod in it is not a schema to report on.
+      const zodModule = !!ctx && ctx.zods.length > 0
+      let from = null
+      if (src) {
+        let z = zHere
+        let same = !zodFile.zod || zHere !== null
+        for (const m of ctx ? ctx.zods : []) {
+          const zm = zodFor(m.file, m.source, m.kind)
+          if (!zm || (z && zm.object !== z.object)) { same = false; break }
+          z = z || zm
+        }
+        if (!same) why.why = zodFile.zod && zHere === null ? 'zod was not found from this file' : 'the schema is put together from modules that do not share one copy of zod'
+        else if (!z) why.why = 'zod was not found from this file'
+        else {
+          const imp = name !== null && !zodFile.consts.has(name) ? src.imports.find((x) => x.name === name) : null
+          from = { z, local: zodFile.zod ? zodFile.zod.local : null, text: src.text, names: src.names, imp: imp || null, parts: src.imports.filter((x) => x !== imp) }
         }
       }
       return from ? { from } : {
@@ -1155,6 +1156,8 @@ export function compileAway(code, id, ata, options) {
               : `\`${name}\` is not a constant the build can read (a \`const\` of one name, at the top of the file or in a function)`,
       }
     }
+    // The schema, built here from its source with the application's zod.
+    const build = (from) => new Function('__ataZ', (from.local ? `const ${from.local} = __ataZ;\n` : '') + from.text)(from.z)
     for (const r of zodFile.resolver && wantResolver ? refs : []) {
       if (r.node.name !== zodFile.resolver.local || declared.get(zodFile.resolver.local) !== 1) continue
       const call = r.parent
@@ -1167,7 +1170,7 @@ export function compileAway(code, id, ata, options) {
       if (!from) { zodKeep(call, why); continue }
       let plan = null; let ir = null
       try {
-        const schema = new Function(from.local, from.text)(from.z)
+        const schema = build(from)
         if (!schema || !schema._zod) { zodKeep(call, 'the schema is not a zod 4 schema'); continue }
         plan = planZod(schema)
         const check = new ata.Validator(plan.json, { richErrors: false })
@@ -1176,7 +1179,7 @@ export function compileAway(code, id, ata, options) {
         ir = irFor(plan.json, { richErrors: false }, false)
       } catch (e) { zodKeep(call, e && e.name === 'ZodRefused' ? e.message : `the schema could not be built here (${String(e && e.message).slice(0, 80)})`); continue }
       if (!ir) { zodKeep(call, 'ata-validator wrote no module for the schema'); continue }
-      found.push({ call, names: from.names, imp: from.imp, plan, ir })
+      found.push({ call, names: from.names, imp: from.imp, parts: from.parts, plan, ir })
     }
     // name.safeParse(value): every use of the schema in the file has to be
     // such a call, and what each returns has to be read only through the
@@ -1201,12 +1204,12 @@ export function compileAway(code, id, ata, options) {
         const { from, why, zodModule } = sourceOf(name, null)
         // A name that is not a schema the build reads (an import from a
         // package, a value made at run time) is not zod's to report on.
-        if (!from) { if (zodFile.consts.has(name) ? !!zodFile.zod && !/^(?:Object|Array|(?:Arrow)?Function|Class|New)Expression$|Literal$/.test(zodFile.consts.get(name).init.type) : zodModule) parseKeep(first, name, why); continue }
+        if (!from) { if (zodFile.consts.has(name) ? (!!zodFile.zod || zodModule) && !/^(?:Object|Array|(?:Arrow)?Function|Class|New)Expression$|Literal$/.test(zodFile.consts.get(name).init.type) : zodModule) parseKeep(first, name, why); continue }
         const flat = readsOnlyIssueFields(uses.map((u) => u.call), scan, zodFile.zod && declared.get(zodFile.zod.local) === 1 ? zodFile.zod.local : null)
         if (flat === null) { parseKeep(first, name, 'what it returns is used in a way the build does not follow: read through more than `success`, `data`, the `code`, `path` and `message` of each of `error.issues` and `error.flatten()`, or returned, stored or handed to a call'); continue }
         let plan = null; let ir = null
         try {
-          const schema = new Function(from.local, from.text)(from.z)
+          const schema = build(from)
           if (!schema || !schema._zod) { parseKeep(first, name, 'the schema is not a zod 4 schema'); continue }
           plan = planZod(schema)
           const refused = parseRefusal(plan)
@@ -1220,7 +1223,7 @@ export function compileAway(code, id, ata, options) {
           ir = irFor(plan.json, { richErrors: false }, false)
         } catch (e) { parseKeep(first, name, e && e.name === 'ZodRefused' ? e.message : `the schema could not be built here (${String(e && e.message).slice(0, 80)})`); continue }
         if (!ir) { parseKeep(first, name, 'ata-validator wrote no module for the schema'); continue }
-        found.push({ parse: true, name, uses, flat, call: first, names: from.names, imp: from.imp, plan, ir })
+        found.push({ parse: true, name, uses, flat, call: first, names: from.names, imp: from.imp, parts: from.parts, plan, ir })
       }
     }
     // A constant or an import something else in the file uses as a value
@@ -1231,7 +1234,7 @@ export function compileAway(code, id, ata, options) {
       const removed = new Set([...names].map((n) => zodFile.consts.get(n).stmt))
       // A z.flattenError(...) the build rewrites no longer names zod.
       const calls = new Set(take.flatMap((f) => f.parse ? [...f.uses.map((u) => u.member), ...f.flat.filter((x) => x.call.arguments.length === 1).map((x) => x.call.callee)] : [f.call]))
-      return { names, removed, calls, uses: usesOf(ast, new Set([...names, ...take.filter((f) => f.imp).map((f) => f.imp.name)]), removed, calls) }
+      return { names, removed, calls, uses: usesOf(ast, new Set([...names, ...take.filter((f) => f.imp).map((f) => f.imp.name), ...take.flatMap((f) => f.parts.map((x) => x.name))]), removed, calls) }
     }
     for (;;) {
       const { uses } = state()
@@ -1275,6 +1278,11 @@ export function compileAway(code, id, ata, options) {
       // types becomes a type import, so the module is not loaded for them.
       const byStmt = new Map()
       for (const f of take) if (f.imp) { if (!byStmt.has(f.imp.stmt)) byStmt.set(f.imp.stmt, new Map()); byStmt.get(f.imp.stmt).set(f.imp.sp, uses.get(f.imp.name).types > 0) }
+      // A part a schema took from another module: its name leaves the import
+      // too where nothing else in the file uses it as a value, or the module
+      // it comes from, and zod with it, would stay on the page for a name
+      // nothing reads.
+      for (const f of take) for (const x of f.parts) if (uses.get(x.name).values === 0 && declared.get(x.name) === 1) { if (!byStmt.has(x.stmt)) byStmt.set(x.stmt, new Map()); byStmt.get(x.stmt).set(x.sp, uses.get(x.name).types > 0) }
       for (const [stmt, taken] of byStmt) {
         if (!stmt.specifiers.every((sp) => sp.type === 'ImportSpecifier')) continue
         const kept = stmt.specifiers.filter((sp) => !taken.has(sp) || taken.get(sp)).map((sp) => { const imported = sp.imported.name || JSON.stringify(sp.imported.value); return { type: taken.has(sp) || sp.importKind === 'type', text: imported === sp.local.name ? imported : `${imported} as ${sp.local.name}` } })
