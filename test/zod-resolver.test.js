@@ -49,16 +49,16 @@ function forms (seed0, count) {
     if (maybe(0.15)) s = rewrite(s)
     return s
   }
-  const num = () => { let s = maybe(0.25) ? z.coerce.number(maybe(0.3) ? 'Must be a number' : undefined) : z.number(maybe(0.2) ? 'Must be a number' : undefined); if (maybe(0.5)) s = s.int(msg()); if (maybe(0.5)) s = maybe(0.5) ? s.min(int(20), msg()) : s.gt(int(20), msg()); if (maybe(0.4)) s = maybe(0.5) ? s.max(30 + int(50), msg()) : s.lt(30 + int(50), msg()); if (maybe(0.2)) s = s.positive(msg()); if (maybe(0.15)) s = s.refine((n) => n % 2 === 0, pick([undefined, 'Even only'])); return s }
+  const num = () => { let s = maybe(0.25) ? z.coerce.number(maybe(0.3) ? 'Must be a number' : undefined) : z.number(maybe(0.2) ? 'Must be a number' : undefined); const whole = maybe(0.2); if (whole) s = z.int(msg()); else if (maybe(0.5)) s = s.int(msg()); if (maybe(0.5)) s = maybe(0.5) ? s.min(int(20), msg()) : s.gt(int(20), msg()); if (maybe(0.4)) s = maybe(0.5) ? s.max(30 + int(50), msg()) : s.lt(30 + int(50), msg()); if (maybe(0.2)) s = s.positive(msg()); if (maybe(0.15)) s = s.refine((n) => n % 2 === 0, pick([undefined, 'Even only'])); return s }
   const leaf = () => pick([str, str, str, num, () => z.boolean(), () => z.enum(['a', 'b', 'c'], msg()), () => z.literal(pick(['x', 7, true]))])()
   const arr = (depth) => { let s = z.array(pick([str, num, () => z.enum(['a', 'b']), () => depth < 2 ? obj(depth + 1) : str()])()); const lo = int(3); if (maybe(0.5)) s = s.min(lo, msg()); if (maybe(0.4)) s = s.max(lo + int(3), msg()); else if (maybe(0.15)) s = s.length(1 + int(3), msg()); if (maybe(0.25)) s = s.refine((a) => new Set(a.map((x) => JSON.stringify(x))).size === a.length, pick([undefined, 'No repeats'])); return s }
   const obj = (depth) => { const shape = {}; const n = 1 + int(5); for (let i = 0; i < n; i++) { let f = depth < 2 && maybe(0.15) ? obj(depth + 1) : maybe(0.2) ? arr(depth) : leaf(); if (maybe(0.3)) f = f.optional(); shape[pick(['a', 'b', 'c', 'name', 'email', 'age', 'x/y', 'k~1']) + i] = f }
-    let o = z.object(shape); const first = Object.keys(shape)[0]
+    let o = maybe(0.3) ? z.strictObject(shape, maybe(0.25) ? { error: 'Not this' } : undefined) : z.object(shape); const first = Object.keys(shape)[0]
     if (maybe(0.3)) o = o.refine(pick([(v) => Object.keys(v).length !== 2, (v) => Object.values(v)[0] !== Object.values(v)[1], (v) => !('extra' in v)]), pick([undefined, 'Not together', { message: 'At the first field', path: [first] }, { message: 'Stops', abort: true }]))
     if (maybe(0.1)) o = o.refine((v) => Object.keys(v).length < 4, { message: 'Too many', path: ['nowhere', 0] })
     return o }
   const good = (node) => { const d = node._zod.def; if (d.type === 'optional') return maybe(0.3) ? undefined : good(d.innerType); if (d.type === 'object') return doc(node, 0.05); if (d.type === 'array') return Array.from({ length: int(5) }, () => maybe(0.2) ? pick(VALUES) : good(d.element)); if (d.type === 'enum') return pick(Object.values(d.entries)); if (d.type === 'literal') return d.values[0]; if (d.type === 'boolean') return maybe(0.5); if (d.type === 'number') return pick([18, 25, 21, 20, 30, 1]); return pick(['abc', 'a@b.co', '12345', 'abcd', 'ab', ' ab ', 'A@B.co ', 'https://example.com', '123e4567-e89b-42d3-a456-426614174000']) }
-  const doc = (node, pBad) => { const out = {}; for (const [k, child] of Object.entries(node._zod.def.shape)) { if (maybe(pBad)) { if (maybe(0.3)) continue; out[k] = pick(VALUES) } else { const v = good(child); if (v !== undefined || maybe(0.3)) out[k] = v } } if (maybe(0.2)) out.extra = 1; return out }
+  const doc = (node, pBad) => { const out = {}; for (const [k, child] of Object.entries(node._zod.def.shape)) { if (maybe(pBad)) { if (maybe(0.3)) continue; out[k] = pick(VALUES) } else { const v = good(child); if (v !== undefined || maybe(0.3)) out[k] = v } } if (maybe(0.2)) out.extra = 1; if (maybe(0.08)) out.more = undefined; return out }
   const out = []
   for (let i = 0; i < count; i++) { const schema = obj(0); out.push({ schema, docs: Array.from({ length: 24 }, (_, j) => j === 0 ? {} : doc(schema, j < 6 ? 0 : 0.35)) }) }
   return out
@@ -68,7 +68,10 @@ describe('zodResolver compiled away: the plan against zod', () => {
   it('answers as the real zodResolver on generated forms, in both criteria modes, with and without raw', async () => {
     let taken = 0; let refused = 0; let answers = 0; let rejected = 0; const why = {}
     const note = (e) => { const k = e.message.replace(/^[^:]*: /, ''); why[k] = (why[k] || 0) + 1 }
-    for (const { schema, docs } of forms(1, 220)) {
+    // ZOD_FORMS_SEED: the same comparison on another sequence of forms.
+    const seed = Number(process.env.ZOD_FORMS_SEED) || 1
+    let strict = 0; let named = 0
+    for (const { schema, docs } of forms(seed, 220)) {
       let plan
       try { plan = planZod(schema) } catch (e) { if (!(e instanceof ZodRefused)) throw e; refused++; note(e); continue }
       const v = new ata.Validator(plan.json, { richErrors: false })
@@ -77,7 +80,7 @@ describe('zodResolver compiled away: the plan against zod', () => {
       let checked
       try { checked = selfCheck(schema, plan, (d) => v.validate(d)) } catch (e) { if (!(e instanceof ZodRefused)) throw e; refused++; note(e); continue }
       assert.equal(checked, null)
-      taken++
+      taken++; if (plan.strict) strict++
       for (const raw of [false, true]) {
         const mine = RT.resolver({ validate: (d) => v.validate(d) }, plan.table, plan.paths, { raw }, plan.refines, plan.fns)
         const theirs = zodResolver(schema, undefined, { raw })
@@ -86,9 +89,12 @@ describe('zodResolver compiled away: the plan against zod', () => {
           const got = await mine(clone(d), undefined, o)
           assert.equal(show(got), show(want), `on ${show(d)} with ${JSON.stringify(o)}, raw ${raw}`)
           answers++; if (Object.keys(want.errors).length) rejected++
+          if (show(want.errors).includes('unrecognized_keys')) named++
         }
       }
     }
+    if (process.env.ZOD_FORMS_SEED) console.log(`seed ${seed}: ${taken} taken (${strict} with a strict object), ${refused} refused, ${answers} answers, ${rejected} rejected, ${named} naming an unknown key`)
+    if (seed === 1) assert.ok(strict >= 20 && named >= 100, `${strict} forms with a strict object, ${named} answers naming an unknown key`)
     assert.ok(taken >= 120, `only ${taken} of 220 forms were taken (${refused} refused: ${JSON.stringify(why)})`)
     assert.ok(rejected > answers / 2 && rejected < answers, `${rejected} of ${answers} answers were rejections`)
   })
@@ -139,11 +145,70 @@ describe('zodResolver compiled away: the plan against zod', () => {
       Object.assign(plan, JSON.parse(keep))
     }
   })
+  it('says nothing of an array\'s length where zod stopped on a number that is not whole under it', async () => {
+    const schema = z.object({ l: z.array(z.number().int()).min(3, 'Three'), m: z.array(z.object({ n: z.int(), s: z.string() })).min(2).optional() })
+    const plan = planZod(schema)
+    const v = new ata.Validator(plan.json, { richErrors: false })
+    assert.equal(selfCheck(schema, plan, (d) => v.validate(d)), null)
+    const mine = RT.resolver({ validate: (d) => v.validate(d) }, plan.table, plan.paths, undefined, plan.refines, plan.fns)
+    const theirs = zodResolver(schema)
+    for (const d of [{ l: [0.5] }, { l: [1, 0.5] }, { l: ['x'] }, { l: [1] }, { l: [1, 2, 3], m: [{ n: 0.5, s: 'a' }] }, { l: [1, 2, 3], m: [{ n: 'x', s: 'a' }] }, { l: [1, 2, 3], m: [{ n: 1, s: 5 }] }, { l: [2 ** 60], m: [{ n: 2 ** 60, s: 'a' }] }]) for (const o of OPTS) assert.equal(show(await mine(clone(d), undefined, o)), show(await theirs(clone(d), undefined, o)), `on ${show(d)}`)
+    // The check made at build time holds this: with the int issue no longer
+    // stopping what is above it, it says so.
+    const loose = new Function('__ataZNest', '__ataZNative', '__ataZAppend', (await fs.readFile(path.join(here, '..', 'src', 'zod-resolver-rt.js'), 'utf8')).replace('entry.i[2], 1, ip, 2]', 'entry.i[2], 1, ip]') + '\nreturn __ataZRun')(null, null, null)
+    const got = loose((d) => v.validate(d), plan.table, plan.paths, { l: [0.5] }, plan.refines, plan.fns)
+    assert.equal(got.issues.length, 2)
+  })
+  it('names the unknown keys of a strict object as zod does, where zod names them', async () => {
+    const SRC = () => z.strictObject({
+      email: z.email(), age: z.int().min(13).max(120).optional(), terms: z.literal(true),
+      address: z.strictObject({ city: z.string().min(2), zip: z.string() }, { error: 'Bad address' }).optional(),
+      lines: z.array(z.strictObject({ sku: z.string() }).refine((v) => v.sku !== 'x', 'No x')).max(2).optional(),
+      open: z.object({ a: z.string().optional() }).optional(),
+    }).refine((v) => v.email !== 'a@b.co', { message: 'Taken', path: ['email'] })
+    const schema = SRC()
+    const plan = planZod(schema)
+    assert.equal(plan.strict, true)
+    assert.equal(plan.json.additionalProperties, undefined)
+    const v = new ata.Validator(plan.json, { richErrors: false })
+    assert.equal(selfCheck(schema, plan, (d) => v.validate(d)), null)
+    const ok = { email: 'x@y.co', terms: true }
+    const inherited = Object.assign(Object.create({ from: 'a prototype' }), ok)
+    const hidden = Object.defineProperty({ ...ok }, 'hidden', { value: 1, enumerable: false })
+    const docs = [
+      ok, { ...ok, extra: 1 }, { z: 1, ...ok, y: undefined }, { ...ok, 'k"e\\y': 1, '\u00fc/~': 2 }, inherited, hidden, { ...ok, [Symbol('s')]: 1 },
+      { email: 'a@b.co', terms: true, extra: 1 }, { email: 5, age: 12.5, extra: 1 }, { extra: 1 }, { ...ok, age: 2 ** 60 }, { ...ok, age: 12 }, { ...ok, age: '13' },
+      { ...ok, address: { city: 'a', zip: '1', street: 'x', no: 2 } }, { ...ok, address: 5, extra: 1 }, { ...ok, address: { extra: 1 } }, { ...ok, address: Object.assign(Object.create({ far: 1 }), { city: 'ab', zip: '1' }) },
+      { ...ok, lines: [{ sku: 'x', q: 1 }, { sku: 1, r: 1 }] }, { ...ok, lines: [{ sku: 'a', q: 1 }, { sku: 'b' }, { sku: 'c', z: 1 }] }, { ...ok, lines: [null, { q: undefined }] },
+      { ...ok, open: { a: 'x', anything: 1 } }, null, [], 'a',
+    ]
+    const dup = (d) => { if (d === null || typeof d !== 'object') return d; if (Array.isArray(d)) return d.map(dup); const o = Object.create(Object.getPrototypeOf(d)); for (const k of Reflect.ownKeys(d)) Object.defineProperty(o, k, { ...Object.getOwnPropertyDescriptor(d, k), value: dup(d[k]) }); return o }
+    let named = 0
+    for (const raw of [false, true]) {
+      const mine = RT.resolver({ validate: (d) => v.validate(d) }, plan.table, plan.paths, { raw }, plan.refines, plan.fns)
+      const theirs = zodResolver(SRC(), undefined, { raw })
+      for (const d of docs) for (const o of OPTS) {
+        const want = await theirs(dup(d), undefined, o)
+        assert.equal(show(await mine(dup(d), undefined, o)), show(want), `on ${show(d)} with ${JSON.stringify(o)}, raw ${raw}`)
+        if (show(want).includes('unrecognized_keys')) named++
+      }
+    }
+    assert.ok(named >= 40, `only ${named} answers named an unknown key`)
+    // The check made at build time sees a strict object that is not held.
+    for (const breakIt of [() => { delete plan.paths[''].s }, () => { delete plan.paths[''].z }, () => { plan.paths[''].s = 'Other' }, () => { delete plan.paths['/address'].s }, () => { plan.paths['/address'].s = 1 }, () => { delete plan.paths['/lines/*'].s }, () => { plan.paths['/open'].s = 1 }, () => { plan.table['#/properties/age/type'].i[0] = 5 }]) {
+      const keep = JSON.stringify(plan)
+      breakIt()
+      assert.notEqual(selfCheck(schema, plan, (d) => v.validate(d)), null, String(breakIt))
+      for (const k of Object.keys(plan.paths)) delete plan.paths[k]
+      Object.assign(plan, JSON.parse(keep), { fns: plan.fns })
+    }
+    assert.equal(selfCheck(schema, plan, (d) => v.validate(d)), null)
+  })
   it('refuses what it does not carry', () => {
     for (const schema of [
       z.object({ a: z.string().refine((v) => v !== OUTSIDE) }), z.object({ a: z.string().superRefine(() => {}) }), z.object({ a: z.string().optional().refine((v) => v !== 'x') }), z.object({ a: z.string().refine(async (v) => v !== 'x') }), z.object({ a: z.string().refine((v) => v !== 'x', { error: (i) => String(i.input) }) }), z.object({ a: z.string().min(1).trim().max(5) }), z.object({ a: z.string().normalize() }), z.object({ a: z.coerce.string() }), z.object({ a: z.coerce.boolean() }), z.object({ a: z.any() }), z.object({ a: z.array(z.string().optional()) }), z.object({ a: z.array(z.string()).min(1).min(2) }), z.object({ a: z.set(z.string()) }),
       z.object({ a: z.string().url().min(10) }), z.object({ a: z.url({ protocol: /^https$/ }) }), z.object({ a: z.string().url({ normalize: true }) }), z.object({ a: z.string().nullable() }), z.object({ a: z.union([z.string(), z.number()]) }), z.object({ a: z.string().default('x') }),
-      z.strictObject({ a: z.string() }), z.object({ a: z.string().transform((v) => v.length) }), z.object({ a: z.date() }), z.string(),
+      z.looseObject({ a: z.string() }), z.object({ a: z.string() }).catchall(z.string()), z.object({ a: z.string() }).passthrough(), z.strictObject({ a: z.string() }, { error: (i) => i.code === 'unrecognized_keys' ? i.keys.join() : undefined }), z.object({ n: z.int32() }), z.object({ n: z.int().int() }), z.object({ a: z.string().transform((v) => v.length) }), z.object({ a: z.date() }), z.string(),
     ]) assert.throws(() => planZod(schema), ZodRefused)
   })
 })
@@ -185,6 +250,20 @@ describe('zodResolver compiled away: a build', () => {
     assert.match(text, /__ataZodResolver/)
     assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
     await same(mod.resolver)
+  })
+  it('replaces a form written the way zod 4 writes it: a strict object, z.email() and z.int()', async () => {
+    const SRC = `z.strictObject({ email: z.email(), password: z.string().min(8).max(72), name: z.string().min(1).max(80), age: z.int().min(13).max(120).optional(), plan: z.enum(['free', 'pro', 'team']).optional(), terms: z.literal(true) })`
+    const { text, mod } = await build('zod4.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst signup = ${SRC}\nexport const resolver = zodResolver(signup)\nconst plain = z.object({ email: z.email() })\nexport const second = zodResolver(plain)\n`)
+    assert.equal((text.match(/__ataZodResolver\(/g) || []).length, 2)
+    assert.match(text, /__ataZStrict/)
+    assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
+    const real = zodResolver(new Function('z', `return ${SRC}`)(z))
+    const ok = { email: 'a@b.co', password: 'longenough', name: 'a', terms: true }
+    for (const d of [ok, { ...ok, age: 13, plan: 'pro' }, { ...ok, age: 12.5 }, { ...ok, age: 12, extra: 1, more: undefined }, { ...ok, terms: false, plan: 'x' }, { extra: 1 }, { email: 'no', password: 'a', name: '', age: 'x', terms: 1 }, {}]) for (const o of OPTS) assert.equal(show(await mod.resolver(clone(d), undefined, o)), show(await real(clone(d), undefined, o)), `on ${show(d)}`)
+    // A file with no strict object does not carry the part that reads keys.
+    const { text: none } = await build('zod4-plain.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst plain = z.object({ email: z.email(), age: z.int().optional() })\nexport const resolver = zodResolver(plain)\n`)
+    assert.match(none, /__ataZodResolver/)
+    assert.doesNotMatch(none, /__ataZStrict/)
   })
   it('reads a schema made of other constants of the file, and a namespace import', async () => {
     const { text, mod } = await build('parts.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport * as zod from 'zod'\nconst roles = ['admin', 'user']\nconst username = zod.string().min(2, { message: 'Username must be at least 2 characters.' }).max(30)\nconst formSchema = zod.object({ username, email: zod.string().email('Please enter a valid email.'), age: zod.number().int().min(18).optional(), role: zod.enum(roles) })\nexport const resolver = zodResolver(formSchema)\n`)

@@ -82,6 +82,27 @@ const __ataZRefine = (issues, P, R, F, doc) => {
   }
 }
 //</refines>
+//<strict>
+// A strict object: the keys the schema does not name, in one issue of the
+// object, after what is said about its fields and before its own refines.
+// zod reads every enumerable key, an inherited one too, and reads no object
+// that is not one or that stands under an array it found too long. The keys
+// are read from the document as it was given, not from the copy a rewrite
+// made: __ataZRun leaves it in __ataZGiven for the one call that reads it, so
+// a file without a strict object carries neither the walk nor a way to it.
+let __ataZGiven
+const __ataZStrict = (issues, P, pat, ip, v) => {
+  const n = P[pat]
+  if (n.a) { if (Array.isArray(v)) for (let i = 0; i < v.length; i++) __ataZStrict(issues, P, pat + '/*', ip + '/' + i, v[i]); return }
+  if (!n.k || v === null || typeof v !== 'object' || Array.isArray(v)) return
+  if (n.s) {
+    const keys = []
+    for (const key in v) if (!n.k.includes(key)) keys.push(key)
+    if (keys.length) issues.push([__ataZKey(P, ip).concat(Infinity), -1, ip, 'unrecognized_keys', n.s === 1 ? 'Unrecognized key' + (keys.length > 1 ? 's' : '') + ': ' + keys.map((k) => '"' + k + '"').join(', ') : n.s, 0, ip, 0])
+  }
+  for (const key of n.k) if (key in v) { const e = '/' + __ataZEsc(key); __ataZStrict(issues, P, pat + e, ip + e, v[key]) }
+}
+//</strict>
 // zod's issues for a rejected document, in zod's order: [instancePath, code, message].
 const __ataZIssues = (errors, T, P, values, R, F) => {
   let issues = []; const capped = []
@@ -96,13 +117,17 @@ const __ataZIssues = (errors, T, P, values, R, F) => {
     }
     const v = __ataZAt(values, ip)
     // A number that is not whole: the int check's issue at its place among
-    // the checks, and nothing after it.
-    if (entry.i && typeof v === 'number' && Number.isFinite(v)) { issues.push([key, entry.i[0], ip, entry.i[1], entry.i[2], 1, ip]); continue }
+    // the checks, and nothing after it. zod stops outright on it, so an
+    // array above it does not have its own length checked either.
+    if (entry.i && typeof v === 'number' && Number.isFinite(v)) { issues.push([key, entry.i[0], ip, entry.i[1], entry.i[2], 1, ip, 2]); continue }
     issues.push([key, -1, ip, 'invalid_type', entry.t.m !== undefined ? entry.t.m : 'Invalid input: expected ' + entry.t.x + ', received ' + __ataZReceived(v), 1, ip])
     // The wrong type stops the checks, except those on a length, worded by
     // what was given: the other kind that has one (c[4]), or anything else.
     if (entry.l && v != null && v.length !== undefined) for (const c of entry.l) if (c[0] ? v.length > c[1] : v.length < c[1]) issues.push([key, c[2], ip, c[3], (entry.s ? typeof v === 'string' : Array.isArray(v)) ? c[4] : c[5], 2, ip])
   }
+//<strict>
+  if (P[''].z) __ataZStrict(issues, P, '', '', __ataZGiven)
+//</strict>
   // zod does not read the items of an oversized array: what the check
   // found under one is not something zod would have said.
   if (capped.length) issues = issues.filter((i) => !capped.some((c) => i[6].startsWith(c)))
@@ -119,6 +144,11 @@ const __ataZIssues = (errors, T, P, values, R, F) => {
 const __ataZRun = (validate, T, P, values, R, F) => {
   const doc = P[''].p ? __ataZPrep(P, '', values) : values
   const r = validate(doc)
+//<strict>
+  // A document the check passed can still hold a key a strict object does
+  // not name.
+  if (P[''].z) { __ataZGiven = values; const found = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F); __ataZGiven = undefined; return found.length ? { issues: found } : { data: __ataZStrip(P, '', doc) } }
+//</strict>
   if (r.valid && !R) return { data: __ataZStrip(P, '', doc) }
   const issues = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F)
   return issues.length ? { issues } : { data: __ataZStrip(P, '', doc) }

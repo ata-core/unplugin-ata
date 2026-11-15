@@ -150,6 +150,12 @@ export const unpluginFactory = (userOptions = {}) => {
     async buildStart() {
       // Outside a bundler (src/scan.js) the caller passes the logger.
       if (!session.logger && userOptions.logger) session.logger = userOptions.logger
+      // Rollup and Rolldown hand a plugin no logger of its own, only the
+      // plugin context's info() and warn(), which follow the build's logLevel.
+      // Without this the report at the end of the build was never printed
+      // there. The context is taken again at every build start, since a
+      // watch build makes a new one.
+      if ((!session.logger || session.logger.ofContext) && this && typeof this.warn === 'function' && typeof this.info === 'function') session.logger = { ofContext: true, info: (m) => this.info(m), warn: (m) => this.warn(m) }
       const { files, results } = await session.compileAll()
       const changed = results.filter((r) => r.changed).length
       session.logger?.info?.(`[unplugin-ata] compiled ${files.length} schema(s), ${changed} file(s) written`)
@@ -338,6 +344,14 @@ export const unpluginFactory = (userOptions = {}) => {
         session.entries = entryList(build.initialOptions && build.initialOptions.entryPoints)
         session.esbuildPlatform = (build.initialOptions && build.initialOptions.platform) || 'browser'
         session.entryBase = cwd || process.cwd()
+        // esbuild gives a plugin no logger either. The report goes to the
+        // console as esbuild's own lines do, by the build's logLevel
+        // ('warning' where none is set): warnings from 'warning' up, the
+        // rest from 'info' up.
+        if (!session.logger && !userOptions.logger) {
+          const level = ['silent', 'error', 'warning', 'info', 'debug', 'verbose'].indexOf((build.initialOptions && build.initialOptions.logLevel) || 'warning')
+          session.logger = { info: level >= 3 ? (m) => console.log(m) : undefined, warn: level >= 2 ? (m) => console.warn(m) : undefined }
+        }
       },
     },
 
