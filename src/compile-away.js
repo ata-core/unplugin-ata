@@ -1126,7 +1126,7 @@ export function compileAway(code, id, ata, options) {
     // Every module on the way has to build with the same copy of zod.
     const sourceOf = (name, arg) => {
       const why = {}
-      const ctx = options.resolveImport ? { resolve: (spec, from) => options.resolveImport(spec, from) || relativeResolve(spec, from) || workspaceResolve(spec, from), read: (file) => readModule(file, parse), file: id, depth: 0, stack: new Set(), zods: [] } : null
+      const ctx = options.resolveImport ? { resolve: (spec, from) => options.resolveImport(spec, from) || relativeResolve(spec, from) || workspaceResolve(spec, from), read: (file) => { if (typeof options.watch === 'function') options.watch(file); return readModule(file, parse) }, file: id, depth: 0, stack: new Set(), zods: [] } : null
       const known = name === null || zodFile.consts.has(name) || (ctx !== null && zodFile.imports.has(name))
       const src = known ? schemaSource(name === null ? arg : name, zodFile, code, false, why, ctx) : null
       // Whether zod had a part in what was read: a name that comes from a

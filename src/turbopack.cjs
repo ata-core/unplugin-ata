@@ -29,7 +29,7 @@ module.exports = function ataTurbopackLoader (source) {
   sessionFor(options, this.rootContext || process.cwd()).then(async (hooks) => {
     if (!hooks.transformInclude(file)) return done(null, source);
     // Turbopack runs the loader once for the browser and once for the server.
-    const out = await hooks.transform.call({}, source, file, { target: this.target });
+    const out = await hooks.transform.call({ addWatchFile: (f) => this.addDependency(f) }, source, file, { target: this.target });
     done(null, out ? out.code : source, out && out.map ? out.map : undefined);
   }, done).catch(done);
 };

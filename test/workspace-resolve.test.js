@@ -61,6 +61,19 @@ describe('a package of the same repository', () => {
     assert.equal(relativeResolve('./nothing', from), null)
     assert.equal(relativeResolve('@acme/core', from), null)
   })
+  it('names every module it read to the bundler, so a change to one rebuilds the form', async () => {
+    const { unpluginFactory } = await import('../src/index.js')
+    const hooks = unpluginFactory({ root: app, verify: false, report: false })
+    await hooks.buildStart.call({})
+    const watched = []
+    const file = path.join(app, 'form.ts')
+    const out = await hooks.transform.call({ addWatchFile: (f) => watched.push(f) }, await fs.readFile(file, 'utf8'), file)
+    assert.match(out.code, /__ataZodResolver/)
+    for (const f of ['core/src/modules/auth.constants.ts', 'core/src/shared/limits.ts', 'core/src/index.ts']) assert.ok(watched.includes(real(f)), `${f} was not named: ${watched.join(', ')}`)
+    // A context without the hook (a bundler that has none) is not an error.
+    const again = await hooks.transform.call({}, await fs.readFile(file, 'utf8'), file)
+    assert.match(again.code, /__ataZodResolver/)
+  })
   it('gives a form its parts: the call is replaced and answers as zodResolver', async () => {
     const esbuild = await import('esbuild')
     const out = path.join(app, 'dist', 'form.out.mjs')
