@@ -20,9 +20,9 @@
 // toLowerCase and toUpperCase before the checks or after them), numbers (int, min, max, gt, lt,
 // positive and the like), booleans, enums, literals, optional fields and
 // nested objects, arrays of these, and refine where its function reads only
-// its argument. Refused: unions, nullable, url, a refine that reads more, transform,
-// default, coerce, a rewrite between two checks, strict and passthrough
-// objects, zod 3.
+// its argument, and strict objects. Refused: unions, nullable, a refine that
+// reads more, transform, default, coerce on anything but a number, a rewrite
+// between two checks, loose and catchall objects, zod 3.
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { closesOver } from './zod.js'
@@ -34,12 +34,12 @@ export const ZOD_RUNTIME = bare(RT_TEXT)
 // Without the part that rewrites strings, for a file none of whose forms has
 // a trim or a case rewrite: the rest only reaches it through a plan that
 // says so (plan.rewrites).
-const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*?//</${part}>\\n`), '')
+const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*?//</${part}>\\n`, 'g'), '')
 // The run-time text for a file: the part that rewrites strings and the part
 // that runs refine functions only where a plan of the file needs them. The
 // rest reaches them only through a plan that says so.
-export const zodRuntimeFor = (rewrites, refines) => bare(without(without(RT_TEXT, rewrites ? '-' : 'rewrites'), refines ? '-' : 'refines'))
-export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false)
+export const zodRuntimeFor = (rewrites, refines, strict) => bare(without(without(without(RT_TEXT, rewrites ? '-' : 'rewrites'), refines ? '-' : 'refines'), strict ? '-' : 'strict'))
+export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
@@ -185,22 +185,28 @@ export function planZod (schema) {
       })
     } else if (def.type === 'number') {
       const fmt = checks.filter((c) => c._zod.def.check === 'number_format')
-      if (fmt.length > 1 || (fmt.length === 1 && fmt[0]._zod.def.format !== 'safeint')) no('a number format other than int')
-      out.type = fmt.length ? 'integer' : 'number'
+      // z.int(): the format is the schema itself and is checked before its
+      // checks, as z.email() is.
+      const head = def.check === 'number_format'
+      if (fmt.length + (head ? 1 : 0) > 1 || (fmt.length === 1 && fmt[0]._zod.def.format !== 'safeint') || (head && def.format !== 'safeint')) no('a number format other than int')
+      out.type = fmt.length || head ? 'integer' : 'number'
       // z.coerce.number(): zod takes Number(value) first, of whatever came,
       // so the only wrong type left is NaN. The same is done to a copy of the
       // document before the check.
       if (def.coerce) { here.w = [3]; paths[''].p = 1; rewrites = true }
       const t = { t: typeEntry(node, 'number', def.coerce ? ['a', {}, 'x y'] : [null, 'a', true, {}]) }
-      if (fmt.length) t.i = [checks.indexOf(fmt[0]), ...one(node, 0.5, (i) => i.code === 'invalid_type' && i.expected === 'int', 'int')]
+      if (fmt.length || head) t.i = [head ? -0.5 : checks.indexOf(fmt[0]), ...one(node, 0.5, (i) => i.code === 'invalid_type' && i.expected === 'int', 'int')]
       table[`${sp}/type`] = t
+      const safe = (rank) => {
+        put('maximum', MAX_SAFE, [rank, ...one(node, 2 ** 60, (i) => i.code === 'too_big' && i.maximum === MAX_SAFE, 'int upper')])
+        put('minimum', -MAX_SAFE, [rank, ...one(node, -(2 ** 60), (i) => i.code === 'too_small' && i.minimum === -MAX_SAFE, 'int lower')])
+      }
+      if (head) safe(-0.5)
       checks.forEach((c, rank) => {
         const d = c._zod.def
         if (d.check === 'custom') { refine(d, rank, ip, def); return }
-        if (d.check === 'number_format') {
-          put('maximum', MAX_SAFE, [rank, ...one(node, 2 ** 60, (i) => i.code === 'too_big' && i.maximum === MAX_SAFE, 'int upper')])
-          put('minimum', -MAX_SAFE, [rank, ...one(node, -(2 ** 60), (i) => i.code === 'too_small' && i.minimum === -MAX_SAFE, 'int lower')])
-        } else if (d.check === 'greater_than' && typeof d.value === 'number') put(d.inclusive ? 'minimum' : 'exclusiveMinimum', d.value, [rank, ...one(node, d.value - 1, (i) => i.code === 'too_small' && i.minimum === d.value, 'min')])
+        if (d.check === 'number_format') safe(rank)
+        else if (d.check === 'greater_than' && typeof d.value === 'number') put(d.inclusive ? 'minimum' : 'exclusiveMinimum', d.value, [rank, ...one(node, d.value - 1, (i) => i.code === 'too_small' && i.minimum === d.value, 'min')])
         else if (d.check === 'less_than' && typeof d.value === 'number') put(d.inclusive ? 'maximum' : 'exclusiveMaximum', d.value, [rank, ...one(node, d.value + 1, (i) => i.code === 'too_big' && i.maximum === d.value, 'max')])
         else no(d.check === 'custom' ? 'refine() is not carried' : `the number check ${d.check} is not carried`)
       })
@@ -240,7 +246,19 @@ export function planZod (schema) {
       out.items = walk(el, `${sp}/items`, `${ip}/*`)
       checks.forEach((c, rank) => { if (c._zod.def.check === 'custom') refine(c._zod.def, rank, ip, def) })
     } else if (def.type === 'object') {
-      if (def.catchall) no('a strict, loose or catchall object is not carried')
+      // A strict object (z.strictObject, .strict()): zod names every key it
+      // was not told about in one issue of the object, after what it says
+      // about the fields. The page finds those keys itself, as zod does
+      // (every enumerable key, an inherited one and one holding undefined
+      // included), so the written schema says nothing about them.
+      if (def.catchall) {
+        if (def.catchall._zod.def.type !== 'never') no('a loose or catchall object is not carried')
+        const said = [['\u0000a'], ['\u0000a', '\u0000b']].map((keys) => { const hit = issuesOf(node, Object.fromEntries(keys.map((k) => [k, 1]))).filter((i) => i.path.length === 0 && i.code === 'unrecognized_keys'); if (hit.length !== 1) no('zod did not report an unknown key of a strict object the way the build expects'); return hit[0].message })
+        if (said[0] === 'Unrecognized key: "\u0000a"' && said[1] === 'Unrecognized keys: "\u0000a", "\u0000b"') here.s = 1
+        else if (said[0] === said[1]) here.s = said[0]
+        else no('a strict object whose message is a function of the keys is not carried')
+        paths[''].z = 1
+      }
       if (checks.some((c) => c._zod.def.check !== 'custom')) no('a check on an object other than refine() is not carried')
       out.type = 'object'; table[`${sp}/type`] = { t: typeEntry(node, 'object', [null, 'a', 1, true]) }
       out.properties = {}; const required = []; here.k = Object.keys(def.shape)
@@ -257,7 +275,7 @@ export function planZod (schema) {
   }
   if (schema._zod.def.type !== 'object') no(schema._zod.def.type === 'pipe' ? 'the schema is a transform or a pipe, which is not carried' : 'the schema is not an object')
   const json = walk(schema, '#', '')
-  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns }
+  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns, strict: paths[''].z === 1 }
 }
 
 // The zod a file imports, as that file resolves it: the value its local name
@@ -280,22 +298,22 @@ const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefin
 // the pool, and on documents with several fields wrong. `validate` is the
 // check compiled from plan.json with plain errors.
 export function selfCheck (schema, plan, validate) {
-  const leaves = []; const arrays = []
+  const leaves = []; const arrays = []; const objects = []
   const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = copyOf(d[k]); return o }
   const good = (node, ip) => {
     let def = node._zod.def; let optional = false
     if (def.type === 'optional') { optional = true; node = def.innerType; def = node._zod.def }
-    if (def.type === 'object') { const out = {}; for (const [k, child] of Object.entries(def.shape)) out[k] = good(child, ip.concat(k)); return out }
+    if (def.type === 'object') { objects.push(ip); const out = {}; for (const [k, child] of Object.entries(def.shape)) out[k] = good(child, ip.concat(k)); return out }
     if (def.type === 'array') {
       // Two items where the bounds allow, the first of them varied below.
       const bound = (kind) => { const c = (def.checks || []).map((x) => x._zod.def).find((d) => d.check === kind || d.check === 'length_equals'); return c === undefined ? undefined : c.check === 'length_equals' ? c.length : kind === 'min_length' ? c.minimum : c.maximum }
       const min = bound('min_length') || 0; const max = bound('max_length')
       const n = Math.max(min, Math.min(2, max === undefined ? 2 : max))
       if (n > 50) throw new ZodRefused('an array that needs many items')
-      const before = [leaves.length, arrays.length]
+      const before = [leaves.length, arrays.length, objects.length]
       const item = good(def.element, ip.concat(0))
       // An array that has to be empty has no first item to vary.
-      if (n === 0) { leaves.length = before[0]; arrays.length = before[1] }
+      if (n === 0) { leaves.length = before[0]; arrays.length = before[1]; objects.length = before[2] }
       arrays.push({ ip, item, n, min, max })
       return Array.from({ length: n }, () => copyOf(item))
     }
@@ -310,6 +328,13 @@ export function selfCheck (schema, plan, validate) {
   const set = (d, ip, v, drop) => { const o = copy(d); let at = o; for (let i = 0; i < ip.length - 1; i++) at = at[ip[i]]; if (drop) delete at[ip[ip.length - 1]]; else at[ip[ip.length - 1]] = v; return o }
   const docs = [base, {}, { ...copy(base), ['\u0000extra']: 1 }]
   for (const ip of leaves) { docs.push(set(base, ip, undefined, true)); for (const v of POOL) docs.push(set(base, ip, v, false)) }
+  // A value of the pool in the first item of an array that is also one short
+  // of its minimum: what zod says about the item decides whether it still
+  // says the array is short.
+  for (const ip of leaves) for (const a of arrays) {
+    if (a.min < 2 || a.ip.length >= ip.length || ip[a.ip.length] !== 0 || !a.ip.every((k, i) => ip[i] === k) || a.ip.some((x) => typeof x === 'number')) continue
+    for (const v of POOL) { const d = set(base, ip, v, false); let at = d; for (const k of a.ip) at = at[k]; at.length = a.min - 1; docs.push(d) }
+  }
   // An array empty, one short of its minimum, one over its maximum, long, and
   // with an item that is not there.
   for (const { ip, item, n, min, max } of arrays) {
@@ -322,9 +347,20 @@ export function selfCheck (schema, plan, validate) {
   // Parents of leaves, wrong as a whole.
   const parents = new Set(leaves.filter((ip) => ip.length > 1).map((ip) => JSON.stringify(ip.slice(0, -1))))
   for (const p of parents) for (const v of [undefined, null, 'a', 1, [], {}]) docs.push(set(base, JSON.parse(p), v, false))
+  // Keys the schema does not name, in every object: one, two, one that
+  // holds undefined, one that is inherited, and one beside a field that is
+  // wrong or missing. A strict object names them; any other drops them.
+  const at = (d, ip) => { let v = d; for (const k of ip) v = v[k]; return v }
+  const extra = (d, ip, keys) => { const o = copy(d); const v = at(o, ip); for (const [k, x] of keys) v[k] = x; return o }
+  for (const ip of objects) {
+    docs.push(extra(base, ip, [['\u0000extra', 1]]), extra(base, ip, [['zz', 1], ['\u0000extra', 'a']]), extra(base, ip, [['\u0000extra', undefined]]))
+    const first = leaves.find((l) => l.length === ip.length + 1 && ip.every((k, i) => l[i] === k))
+    if (first) { docs.push(extra(set(base, first, null, false), ip, [['\u0000extra', 1]]), extra(set(base, first, undefined, true), ip, [['\u0000extra', 1]])) }
+    if (ip.length) { const o = copy(base); const parent = at(o, ip.slice(0, -1)); parent[ip[ip.length - 1]] = Object.assign(Object.create({ inherited: 1 }), at(o, ip)); docs.push(o) }
+  }
   // Several fields wrong at once, by a fixed sequence.
   let seed = 7; const next = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >>> 8) % n }
-  for (let i = 0; i < 60 && leaves.length > 1; i++) { let d = base; for (const ip of leaves) if (next(3) === 0) d = set(d, ip, POOL[next(POOL.length)], next(5) === 0); docs.push(d) }
+  for (let i = 0; i < 60 && leaves.length > 1; i++) { let d = base; for (const ip of leaves) if (next(3) === 0) d = set(d, ip, POOL[next(POOL.length)], next(5) === 0); for (const ip of objects) if (next(4) === 0) d = extra(d, ip, [['\u0000extra', 1]]); docs.push(d) }
   for (const d of docs) {
     const want = schema.safeParse(copy(d))
     const got = RT.run(validate, plan.table, plan.paths, copy(d), plan.refines, plan.fns)

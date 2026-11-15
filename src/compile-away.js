@@ -1089,6 +1089,7 @@ export function compileAway(code, id, ata, options) {
   const zodKeep = (call, reason) => { if (options && Array.isArray(options.kept)) options.kept.push({ line: call.loc ? call.loc.start.line : null, reason: `zodResolver(${call.arguments[0] && call.arguments[0].type === 'Identifier' ? call.arguments[0].name : '...'}): ${reason}`, zod: true }) }
   let zodRewrites = false
   let zodRefines = false
+  let zodStrict = false
   if (zodFile && !virtual) {
     const zHere = zodFile.zod ? zodFor(id, zodFile.zod.source, zodFile.zod.kind) : null
     // A schema the file imports by name is read from the module it comes
@@ -1178,6 +1179,7 @@ export function compileAway(code, id, ata, options) {
         zodDone++
         if (f.plan.rewrites) zodRewrites = true
         if (f.plan.refines) zodRefines = true
+        if (f.plan.strict) zodStrict = true
       }
       for (const stmt of removed) s.remove(stmt.start, stmt.end)
       // An imported schema: its name leaves the import, or stays as a type
@@ -1415,7 +1417,7 @@ export function compileAway(code, id, ata, options) {
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (resolverCalls.size) addImport(resolverKind === 'own' ? OWN_RESOLVER : `import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
-  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + zodRuntimeFor(zodRewrites, zodRefines))
+  if (zodDone) addImport(ZOD_RUNTIME_IMPORTS + zodRuntimeFor(zodRewrites, zodRefines, zodStrict))
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)

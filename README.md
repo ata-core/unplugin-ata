@@ -443,18 +443,22 @@ Carried: an object of strings (`min`, `max`, `length`, `email`, `regex`,
 as the schema itself, `z.email()`; several `regex` checks on one field; `url()`, checked
 with the browser's own URL parser as zod checks it, as the last check of its
 field; `trim`, `toLowerCase` and `toUpperCase`
-written before the checks or after them), numbers (`int`,
+written before the checks or after them), numbers (`int`, written as a check or
+as the schema itself, `z.int()`;
 `min`, `max`, `gt`, `lt`, `positive`, and `z.coerce.number()`), booleans, enums, literals, optional
 fields, nested objects and arrays of any of these (`min`, `max`, `length`,
 `nonempty`), and `refine` on any of them where its function reads nothing
 but its own argument (`(v) => v.password === v.confirm`, with its message,
-`path` and `abort`), with zod 4. A refine's function goes into the page as
-it is written. Not carried, so the call stays as
+`path` and `abort`), and strict objects (`z.strictObject`, `.strict()`), whose
+unknown keys are named in one issue as zod names them, with zod 4. A refine's
+function goes into the page as it is written. Not carried, so the call stays as
 written and zod stays on that page: unions, `nullable`, `url()` with
 `hostname`, `protocol` or `normalize` or with a check after it,
 a `refine` that reads a value from outside, an async one, `superRefine`,
 `transform`, `default`, `coerce` on anything but a number, a
-rewrite such as `trim` between two checks, strict objects, a schema
+rewrite such as `trim` between two checks, loose and catchall objects
+(`z.looseObject`, `.passthrough()`, `.catchall()`), a strict object whose
+message is a function of the keys, number formats other than `int`, a schema
 exported from the file of the call or used elsewhere in it as a value, a schema built from anything but zod and constants of the file,
 and a call that passes options. An application that changes zod's messages
 as a whole (`z.config(...)`, a locale, a global error map) gets no call
@@ -663,6 +667,13 @@ two arguments; ata-validator declines to compile the schema standalone. With
 every call replaced the last line says so: `the runtime compiler is out of the
 bundle`. `report: false` turns the lines off. Programmatically, `compileAway()`
 returns `kept` as `[{ line, reason }]` beside `replaced`.
+
+A kept call is a warning and the other lines are informational. They go to the
+bundler's own log: Vite's logger, webpack's and Rspack's infrastructure log,
+the plugin context of Rollup and Rolldown, and under esbuild the console, by
+the build's `logLevel` (a warning from `warning` up, the rest from `info` up;
+a build that sets none is read as `warning`). A `zodResolver` call left as
+written is listed the same way, with its reason, as an informational line.
 
 ### Bun, compiled ahead of time
 
