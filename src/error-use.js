@@ -51,6 +51,9 @@ export const readsOnlyIssueFields = (calls, scan, zod) => {
   return follows(calls, scan, { fields: new Set(['code', 'path', 'message']), result: new Set(['success', 'data']), list: 'issues', holder: 'error', zod, flat }) ? flat : null
 }
 export const readsOnlyPlainFields = (calls, scan) => follows(calls, scan, ATA)
+// Whether each validate() result is read through `valid` and nothing else:
+// no error, no data. Such a validator needs no error function at all.
+export const readsOnlyValid = (calls, scan) => follows(calls, scan, { fields: new Set(), result: new Set(['valid']), list: null, holder: null })
 
 function follows(calls, scan, shape) {
   const PLAIN_FIELDS = shape.fields; const RESULT_FIELDS = shape.result

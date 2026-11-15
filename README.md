@@ -733,6 +733,16 @@ reference the official meta-schema or use a location-independent identifier,
 differ from the runtime either way on ata-validator 1.63.1, which is not
 this option's doing and is not fixed by it.
 
+The same reading decides one more thing. Where every `validate()` result of a
+validator is read through `valid` and nothing else (`v.validate(d).valid`, a
+`const` or a `{ valid }` pattern whose other fields are never touched), no
+error is ever read, and the validator is written without its error functions,
+as one that only calls `isValidObject()` is. `validate()` then answers
+`{ valid }` from the verdict function, after the same defaults pass. On the
+signup form above, esbuild minified, ata-validator 1.64.0: 1,905 B gzipped
+before, 1,123 B now, against 1,107 B for the same file written with
+`isValidObject()`. `errorFields: 'all'` keeps the error functions here too.
+
 ### The report: what stayed on the runtime, and why
 
 A kept `new Validator(...)` is the one thing that keeps the runtime compiler

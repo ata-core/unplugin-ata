@@ -63,7 +63,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { parse } from '@babel/parser'
 import MagicString from 'magic-string'
-import { readsOnlyPlainFields, readsOnlyIssueFields } from './error-use.js'
+import { readsOnlyPlainFields, readsOnlyIssueFields, readsOnlyValid } from './error-use.js'
 import { ZOD_RESOLVERS, zodRuntimeFor, ZOD_RUNTIME_IMPORTS, planZod, parseRefusal, selfCheck, zodFor, readZodFile, readZodModule, schemaSource, usesOf } from './zod-resolver.js'
 
 const METHODS = new Set(['validate', 'isValidObject', 'validateJSON', 'isValidJSON'])
@@ -990,7 +990,12 @@ export function compileAway(code, id, ata, options) {
   // Under the `ir` option: the helpers of ata-validator/kernels the file's IR
   // modules use, imported once under aliases.
   const irKernels = new Set()
-  const placeIR = (index, src, verdictOnly) => {
+  // `validOnly`: validate() is called, and every result is read through
+  // `valid` alone. The module is written without its error functions, as for
+  // isValidObject, and validate() answers with the verdict in an object.
+  // Both run the defaults pass and the same verdict function, so the answer
+  // and what is written onto the document are what validate() gave.
+  const placeIR = (index, src, verdictOnly, validOnly) => {
     const m = /^import \{([^}]*)\} from "ata-validator\/kernels"\n/.exec(src)
     const body = pruneModule((m ? src.slice(m[0].length) : src).replace(/^export function /gm, 'function '), verdictOnly ? ['isValid'] : ['validate', 'isValid'])
     // The helpers the pruned body still names (a verdict module drops the
@@ -998,7 +1003,7 @@ export function compileAway(code, id, ata, options) {
     const names = (m ? m[1].split(',').filter(Boolean) : []).filter((n) => new RegExp(`(?<![\\w$.])${n}(?![\\w$])`).test(body))
     for (const n of names) irKernels.add(n)
     const alias = names.length ? `const ${names.map((n) => `${n} = __ataK_${n}`).join(', ')};\n` : ''
-    modules.push(`const __ataCompiled${index} = (() => {\n${alias}${body}\nreturn ${verdictOnly ? '{ isValidObject: isValid }' : '{ validate, isValidObject: isValid }'};\n})();\n`)
+    modules.push(`const __ataCompiled${index} = (() => {\n${alias}${body}\nreturn ${validOnly ? '{ validate: (d) => ({ valid: isValid(d) }), isValidObject: isValid }' : verdictOnly ? '{ isValidObject: isValid }' : '{ validate, isValidObject: isValid }'};\n})();\n`)
   }
   // A table plan: data and the kernels it names, each read as the import the
   // file gets (__ataK_), outside string literals; no aliases to repeat per
@@ -1045,7 +1050,7 @@ export function compileAway(code, id, ata, options) {
       try { tab = ata.ir.tableModule(schema, opts) } catch { tab = null }
       if (tab) return { src: tab, place: placeTable }
     }
-    return { src: irSrc, place: (i, x, v) => placeIR(i, x, v) }
+    return { src: irSrc, place: (i, x, v, only) => placeIR(i, x, v, only) }
   }
   const resolverCalls = new Set()
   if (resolverName) {
@@ -1360,7 +1365,8 @@ export function compileAway(code, id, ata, options) {
       let opts = null
       try { opts = optionsArg ? JSON.parse(optionsArg) : {} } catch { opts = null }
       if (opts && Object.keys(opts).every((k) => (k === 'richErrors' || k === 'useDefaults' || k === 'assertFormat') && typeof opts[k] === 'boolean')) {
-        const verdictOnly = [...binding.methods].every((m) => m === 'isValidObject')
+        const callsOnly = [...binding.methods].every((m) => m === 'isValidObject')
+        const validOnly = !callsOnly && errorFields !== 'all' && binding.validateCalls.length > 0 && readsOnlyValid(binding.validateCalls, scan)
         // Verdict functions always: validate() answers a valid document with
         // them before it gathers any error, and without them that answer
         // runs the error-gathering functions with no list. On SchemaStore's
@@ -1370,10 +1376,12 @@ export function compileAway(code, id, ata, options) {
         // fillSource: the runtime's generated defaults pass, written in where
         // the IR's own fill declines (on SchemaStore 0.56 of the time on the
         // 22 schemas it changes, slower on none).
-        const ir = irFor(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false }, verdictOnly, expr)
+        const ir = irFor(schema, { richErrors: opts.richErrors !== false, useDefaults: opts.useDefaults !== false, assertFormat: opts.assertFormat !== false }, callsOnly, expr)
         if (ir) {
           const index = modules.length
-          ir.place(index, ir.src, verdictOnly)
+          // A table plan runs on one interpreter that has its errors anyway.
+          const verdictOnly = callsOnly || (validOnly && ir.place !== placeTable)
+          ir.place(index, ir.src, verdictOnly, validOnly && !callsOnly)
           if (verdictOnly) kinds.verdict++; else if (opts.richErrors === false) kinds.plain++; else kinds.errors++
           s.overwrite(expr.start, expr.end, `__ataCompiled${index}`)
           done.add(expr)
