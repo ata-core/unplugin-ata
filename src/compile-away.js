@@ -1207,7 +1207,10 @@ export function compileAway(code, id, ata, options) {
           const refused = parseRefusal(plan)
           if (refused) { parseKeep(first, name, refused); continue }
           const check = new ata.Validator(plan.json, { richErrors: false })
-          const differs = selfCheck(schema, plan, (d) => check.validate(d)) || selfCheck(schema, plan, (d) => check.validate(d), true)
+          // The safeParse mode alone: it makes the documents the resolver mode
+          // makes and more, and compares each issue with its path, which holds
+          // everything the other comparison does.
+          const differs = selfCheck(schema, plan, (d) => check.validate(d), true)
           if (differs !== null) { parseKeep(first, name, `the compiled check did not answer as zod (${differs.slice(0, 80)}); kept as written, and worth reporting`); continue }
           ir = irFor(plan.json, { richErrors: false }, false)
         } catch (e) { parseKeep(first, name, e && e.name === 'ZodRefused' ? e.message : `the schema could not be built here (${String(e && e.message).slice(0, 80)})`); continue }

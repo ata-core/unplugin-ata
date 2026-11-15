@@ -530,6 +530,20 @@ Measured on a six-field signup form read as above (esbuild, minified,
 gzipped, zod 4.6.7): 93,079 B as written, 3,329 B through the plugin. The
 example above comes to 3,048 B with esbuild, 3,370 B with Vite, 3,047 B with
 webpack and 3,109 B with Rspack, each without zod in the bundle.
+
+In a Next.js 16.4.6 application with two client pages, one with that schema
+and one that imports its schema from `lib/` and reads
+`error.flatten().fieldErrors`, the chunk that held zod (30,489 B under
+Turbopack, 24,430 B under webpack) is gone, and all the client JavaScript of
+the build together goes from 205,915 B to 180,859 B gzipped under Turbopack
+and from 309,323 B to 290,142 B under webpack. The pages were built, not
+driven in a browser.
+
+It costs build time: each schema is built with the application's zod and held
+to it on a few hundred documents. On 200 files of one six-field schema each,
+an esbuild build took 82 ms with `zodSafeParse: false` and about 1.4 s with
+it, 7 ms a schema. A file whose `safeParse` is not zod's costs the parse it
+would otherwise have been spared, 0.2 ms a file on 200 files.
 `zodSafeParse: false` turns the rewrite off.
 
 ### rjsf: `<Form schema={schema} validator={validator} />`
