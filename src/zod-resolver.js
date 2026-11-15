@@ -447,6 +447,9 @@ const isName = (n, up) => {
 export function readZodFile (ast, needResolver = true) {
   let zod = null; let resolver = null
   const consts = new Map(); const exports = new Map()
+  // What the file imports by name as a value, and what it hands on from
+  // other modules without naming it (`export { x } from`, `export * from`).
+  const imports = new Map(); const reexports = { named: new Map(), star: [] }
   const one = (stmt, decl, exported) => {
     if (decl.type !== 'VariableDeclaration' || decl.kind !== 'const' || decl.declarations.length !== 1 || decl.declarations[0].id.type !== 'Identifier' || !decl.declarations[0].init) return
     const name = decl.declarations[0].id.name
@@ -455,6 +458,7 @@ export function readZodFile (ast, needResolver = true) {
   }
   for (const stmt of ast.program.body) {
     if (stmt.type === 'ImportDeclaration' && stmt.importKind !== 'type') {
+      for (const sp of stmt.specifiers) if (sp.type === 'ImportSpecifier' && sp.importKind !== 'type') imports.set(sp.local.name, { stmt, sp, imported: sp.imported.name || sp.imported.value, source: stmt.source.value })
       if (stmt.source.value === ZOD_RESOLVERS) {
         for (const sp of stmt.specifiers) if (sp.type === 'ImportSpecifier' && sp.importKind !== 'type' && (sp.imported.name || sp.imported.value) === 'zodResolver') resolver = { stmt, local: sp.local.name }
       } else if ((stmt.source.value === 'zod' || stmt.source.value === 'zod/v4') && stmt.specifiers.length === 1) {
@@ -465,8 +469,9 @@ export function readZodFile (ast, needResolver = true) {
     } else if (stmt.type === 'VariableDeclaration') one(stmt, stmt, false)
     else if (stmt.type === 'ExportNamedDeclaration' && stmt.exportKind !== 'type') {
       if (stmt.declaration) one(stmt, stmt.declaration, true)
-      else if (!stmt.source) for (const sp of stmt.specifiers) if (sp.type === 'ExportSpecifier' && sp.exportKind !== 'type' && sp.local.type === 'Identifier') { exports.set(sp.exported.name || sp.exported.value, sp.local.name); const c = consts.get(sp.local.name); if (c) c.exported = true }
-    }
+      else if (!stmt.source) { for (const sp of stmt.specifiers) if (sp.type === 'ExportSpecifier' && sp.exportKind !== 'type' && sp.local.type === 'Identifier') { exports.set(sp.exported.name || sp.exported.value, sp.local.name); const c = consts.get(sp.local.name); if (c) c.exported = true } }
+      else { for (const sp of stmt.specifiers) if (sp.type === 'ExportSpecifier' && sp.exportKind !== 'type' && sp.local.type === 'Identifier') reexports.named.set(sp.exported.name || sp.exported.value, { source: stmt.source.value, imported: sp.local.name }) }
+    } else if (stmt.type === 'ExportAllDeclaration' && stmt.exportKind !== 'type' && !stmt.exported) reexports.star.push(stmt.source.value)
   }
   // A constant declared inside a function, a component's body say: read like
   // one at the top of the file where the file declares that name once (the
@@ -480,32 +485,56 @@ export function readZodFile (ast, needResolver = true) {
   })
   // `export { x }` written before the constant it names.
   for (const local of exports.values()) { const c = consts.get(local); if (c) c.exported = true }
-  return resolver || !needResolver ? { zod, resolver, consts, exports } : null
+  return resolver || !needResolver ? { zod, resolver, consts, exports, imports, reexports } : null
 }
 
-// A module a form imports its schema from, read as text and never run: its
-// zod import, constants and exports, with the source they are cut from.
-export function readZodModule (file, parse) {
-  let code
-  try { if (fs.statSync(file).size > 1 << 18) return null; code = fs.readFileSync(file, 'utf8') } catch { return null }
-  if (!code.includes('zod')) return null
-  let ast
-  try { ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false }) } catch { return null }
-  const info = readZodFile(ast, false)
-  return info.zod ? { ...info, code } : null
+// A module a schema takes a part from, read as text and never run: its zod
+// import where it has one, its constants, imports and exports, with the
+// source they are cut from. Read once per version of the file.
+const modules = new Map()
+export function readModule (file, parse) {
+  let stat
+  try { stat = fs.statSync(file) } catch { return null }
+  if (stat.size > 1 << 18) return null
+  const had = modules.get(file)
+  if (had && had.mtime === stat.mtimeMs) return had.info
+  let info = null
+  try {
+    const code = fs.readFileSync(file, 'utf8')
+    const ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false })
+    info = { ...readZodFile(ast, false), code, file }
+  } catch { info = null }
+  modules.set(file, { mtime: stat.mtimeMs, info })
+  return info
 }
 
 // The source that builds the schema `name` stands for, as the body of a
 // function of zod's local name, with the constants it is made of before it;
 // null where it names anything else (a value from outside, a function, a
 // TypeScript expression): then it cannot be built outside the file.
-export function schemaSource (name, info, code, exportedToo = false, out = {}) {
+export function schemaSource (name, info, code, exportedToo = false, out = {}, ctx = null) {
+  // What the schema is made of, in the order it has to be written: a
+  // constant of the file ({ name, text }), or a part imported by name from
+  // another module ({ name, text, imp }), written as a function of zod that
+  // holds that module's own constants, so two modules may use one name.
   const order = []; const seen = new Set()
   const fail = (why) => { if (out.why === undefined) out.why = why; return false }
-  const readable = (node) => {
+  const zLocal = info.zod ? info.zod.local : null
+  // The source of a constant without the TypeScript that only says what it
+  // is: `as const`, `as T`, `satisfies T` and `!` are cut from the text.
+  const textOf = (node) => {
+    const cuts = []
+    const ok = readable(node, cuts)
+    if (!ok) return null
+    cuts.sort((a, b) => a[0] - b[0])
+    let text = ''; let at = node.start
+    for (const [from, to] of cuts) { if (from < at) continue; text += code.slice(at, from); at = to }
+    return text + code.slice(at, node.end)
+  }
+  const readable = (node, cuts) => {
     let ok = true
-    walk(node, (n, up) => {
-      if (!ok) return
+    const visitNode = (n, up) => {
+      if (!ok) return false
       // A function is read where it is what refine() is given and reads
       // nothing but its own argument; its body is not walked.
       if (/^(?:Arrow)?FunctionExpression$/.test(n.type) && !n.async && !n.generator && up && up[0].type === 'CallExpression' && up[1] === 'arguments' && up[0].arguments[0] === n && up[0].callee.type === 'MemberExpression' && !up[0].callee.computed && up[0].callee.property.name === 'refine') {
@@ -513,30 +542,88 @@ export function schemaSource (name, info, code, exportedToo = false, out = {}) {
         if (outside.length) ok = fail(`a refine reads ${outside.map((x) => '`' + x + '`').join(', ')} from outside its own argument, which the build does not carry`)
         return false
       }
-      if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = fail(/Function/.test(n.type) ? 'the schema has a function in it (a refine, a transform or a message function), which the build does not carry' : n.type.startsWith('TS') ? 'the schema has TypeScript syntax in it (a cast or a type argument)' : `the schema has a ${n.type} in it, which the build does not read`); return }
+      // A cast says nothing at run time: the expression under it is read,
+      // and the cast leaves the text.
+      if (n.type === 'TSAsExpression' || n.type === 'TSSatisfiesExpression' || n.type === 'TSNonNullExpression') {
+        cuts.push([n.expression.end, n.end])
+        if (n.expression.start > n.start) cuts.push([n.start, n.expression.start])
+        walk(n.expression, visitNode)
+        return false
+      }
+      if (n.type.startsWith('TS') || n.type.startsWith('JSX') || /Function|Class|Await|Yield|Assignment|Update|New|This|Import|TaggedTemplate|Sequence/.test(n.type)) { ok = fail(/Function/.test(n.type) ? 'the schema has a function in it (a refine, a transform or a message function), which the build does not carry' : n.type.startsWith('TS') ? 'the schema has TypeScript syntax in it (a type argument)' : `the schema has a ${n.type} in it, which the build does not read`); return }
       // Nothing but zod's own methods by name: no computed member, and none
       // of the names that reach a function constructor.
       if ((n.type === 'MemberExpression' || n.type === 'OptionalMemberExpression') && (n.computed || /^(?:constructor|prototype|__proto__|call|apply|bind)$/.test(n.property.name))) { ok = fail('the schema reads a member the build does not follow'); return }
-      if (n.type === 'Identifier' && isName(n, up) && n.name !== info.zod.local && n.name !== 'undefined') { if (!info.consts.has(n.name)) ok = fail(`the schema uses \`${n.name}\`, which is not zod or a constant of the file (a prop, a translation function and the like cannot be read)`); else if (!visit(n.name)) ok = false }
-    })
+      if (n.type === 'Identifier' && isName(n, up) && n.name !== zLocal && n.name !== 'undefined') {
+        if (!info.consts.has(n.name) && !(ctx && info.imports && info.imports.has(n.name))) ok = fail(`the schema uses \`${n.name}\`, which is not zod, a constant of the file or a constant imported by name (a prop, a translation function and the like cannot be read)`)
+        else if (!visit(n.name)) ok = false
+      }
+    }
+    walk(node, visitNode)
     return ok
   }
   const visit = (nm) => {
     if (seen.has(nm)) return true
     seen.add(nm)
     const c = info.consts.get(nm)
+    if (!c) {
+      const imp = ctx && info.imports ? info.imports.get(nm) : undefined
+      if (!imp) return fail(`\`${nm}\` is not a constant the build can read`)
+      const part = moduleSource(imp.source, imp.imported, ctx, out, fail)
+      if (!part) return false
+      order.push({ name: nm, imp, text: `const ${nm} = ((${part.local}) => {\n${part.text}\n})(__ataZ);\n` })
+      return true
+    }
     // In the file of the call an exported constant has readers the build
     // does not see, so it cannot be taken out and is not read.
-    if (!c) return fail(`\`${nm}\` is not a constant the build can read`)
     if (c.exported && !exportedToo) return fail(`\`${nm}\` is exported, so other files may read it and it cannot leave this one`)
-    if (!readable(c.init)) return false
-    order.push(nm)
+    const text = textOf(c.init)
+    if (text === null) return false
+    order.push({ name: nm, text: `const ${nm} = ${text};\n` })
     return true
   }
   // A name, or the expression written in the call itself.
-  if (typeof name === 'string') { if (!visit(name)) return null } else if (!readable(name)) return null
-  const body = order.map((nm) => `const ${nm} = ${code.slice(info.consts.get(nm).init.start, info.consts.get(nm).init.end)};\n`).join('')
-  return { names: order, text: body + (typeof name === 'string' ? `return ${name};` : `return (${code.slice(name.start, name.end)});`) }
+  let last
+  if (typeof name === 'string') { if (!visit(name)) return null; last = `return ${name};` } else { const text = textOf(name); if (text === null) return null; last = `return (${text});` }
+  return { names: order.filter((o) => !o.imp).map((o) => o.name), imports: order.filter((o) => o.imp).map((o) => ({ name: o.name, stmt: o.imp.stmt, sp: o.imp.sp })), text: order.map((o) => o.text).join('') + last }
+}
+
+// The source of what a module exports under `exported`, as the body of a
+// function of that module's name for zod: its constants, and what it takes
+// from other modules in turn. The module is found by the build's resolver
+// and read as text; `export { x } from` and `export * from` are followed.
+// `ctx` is { resolve, read, file, depth, stack, zods }: `zods` collects the
+// zod import of every module read, for the caller to hold them to one copy.
+function moduleSource (source, exported, ctx, out, fail) {
+  if (ctx.depth >= 8) return fail('the schema is put together from more modules than the build follows')
+  const file = ctx.resolve(source, ctx.file)
+  if (!file) return fail(`its module \`${source}\` was not found among the project's files`)
+  const mod = ctx.read(file)
+  if (!mod) return fail(`its module \`${source}\` could not be read`)
+  const key = file + '\u0000' + exported
+  if (ctx.stack.has(key)) return fail(`\`${exported}\` of \`${source}\` is made of itself`)
+  const inner = { ...ctx, file, depth: ctx.depth + 1 }
+  const local = mod.exports.get(exported)
+  if (local === undefined) {
+    const re = mod.reexports.named.get(exported)
+    if (re) return moduleSource(re.source, re.imported, inner, out, fail)
+    // `export * from`: the first of them that has the name. A miss in one
+    // is not the reason to give, so each is asked with a reason of its own.
+    for (const star of mod.reexports.star) {
+      const quiet = {}
+      const hit = moduleSource(star, exported, inner, quiet, (why) => { if (quiet.why === undefined) quiet.why = why; return false })
+      if (hit) return hit
+      if (quiet.found) return fail(quiet.why)
+    }
+    return fail(`\`${exported}\` is not a constant \`${source}\` exports`)
+  }
+  out.found = true
+  if (mod.zod) ctx.zods.push({ file, source: mod.zod.source, kind: mod.zod.kind })
+  ctx.stack.add(key)
+  const sub = schemaSource(local, mod, mod.code, true, out, inner)
+  ctx.stack.delete(key)
+  if (!sub) return null
+  return { text: sub.text, local: mod.zod ? mod.zod.local : '__ataNoZod' }
 }
 
 // Where the file still uses `names` once `removed` statements and `replaced`

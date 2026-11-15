@@ -425,12 +425,25 @@ alone is 12.3 KB.
 
 The schema can be a constant of the file, at the top or inside the component,
 built from zod and other constants of the file, or written in the call itself.
-One built from a prop or a translation function cannot be read. It can also come from another module of the project, imported by
-name (`import { formSchema } from '@/lib/schemas'`). That module is read as
-text and never run: it has to import zod under one name and build the schema
-from zod and its own constants. A module that builds it from another module's
-parts, or with a function, keeps the call. Under webpack and Rspack this
-needs the build's source scan to have finished, which it has from 0.17.0.
+One built from a prop, a hook or a translation function cannot be read.
+
+It can also be put together from other modules. A name the schema uses, or the
+schema itself, may be imported by name (`import { formSchema } from
+'@/lib/schemas'`, `import { MAX_NAME, zEmail } from './limits'`): a constant
+(`export const ROLES = ['admin', 'user'] as const`), a schema, or a schema
+derived from an imported one (`account.pick({ email: true })`). Each module on
+the way is read as text and never run. It has to hold the name as a `const`,
+built from zod and constants in turn; `export { x } from` and `export * from`
+are followed, a cast is dropped from what is read, and two modules may use one
+name for different things. The module can be a file of the project, found by
+the build's own resolver and the aliases of `tsconfig.json`, or a package of
+the same repository linked into `node_modules`, read by its `exports` map
+where that leads to source; an installed dependency is never read. A part
+that is a function, a hook or a class, modules that do not share one copy of
+zod, and a package that exports built CommonJS keep the call. Under webpack
+and Rspack this needs the build's source scan to have finished, which it has
+from 0.17.0. A part whose import nothing else in the file uses leaves the
+import, so its module does not stay on the page for it.
 
 Nothing is replaced on trust. Before a call is replaced, the build runs the
 written check beside the real schema on documents made for that form (each
