@@ -502,11 +502,15 @@ else is read: every use of the schema in the file is `name.safeParse(one
 argument)`, and each result is read through `success`, `data`, `error.issues`
 and those three fields of an issue, directly, through a `const`, a
 destructuring pattern, a `for...of`, or `map`, `filter`, `find`, `some`,
-`every` and `forEach` with an arrow function. A result that is returned,
-stored, spread or handed to a call keeps zod, and so do `error.flatten()`,
-`z.treeifyError(error)`, `error.message`, `schema.parse()`, `safeParseAsync`
-and a schema that is exported or used as a value. The report names each schema
-left as written and why.
+`every` and `forEach` with an arrow function. `error.flatten()` and
+`z.flattenError(error)` without a mapper are carried too: each becomes a call
+that makes the same `{ formErrors, fieldErrors }` from the issues, so
+`result.error.flatten().fieldErrors` works as written. A result that is
+returned, stored, spread or handed to a call keeps zod, and so do a flatten
+with a mapper, `z.treeifyError(error)`, `z.prettifyError(error)`,
+`error.format()`, `error.message`, `schema.parse()`, `safeParseAsync` and a
+schema that is exported or used as a value. The report names each schema left
+as written and why, and `unplugin-ata scan` lists them without building.
 
 The schemas carried are the ones `zodResolver` carries, above, read from the
 file or from a module of the project the same way. Two more are refused here,
@@ -516,12 +520,16 @@ sets zod's messages as a whole gets nothing replaced.
 
 Before a schema is replaced the build holds it to zod's `safeParse` on the
 documents it makes for a resolver and on values that are not objects at all,
-comparing the verdict, the data and every issue with its path.
+comparing the verdict, the data and every issue with its path. A schema with a
+field named like something every object inherits (`toString`, `constructor`)
+fails that check, since zod reads such a field from the prototype, and is kept.
 `test/zod-safe-parse.test.js` does the same on generated schemas and through
 real builds.
 
 Measured on a six-field signup form read as above (esbuild, minified,
-gzipped, zod 4.6.7): 93,079 B as written, 3,329 B through the plugin.
+gzipped, zod 4.6.7): 93,079 B as written, 3,329 B through the plugin. The
+example above comes to 3,048 B with esbuild, 3,370 B with Vite, 3,047 B with
+webpack and 3,109 B with Rspack, each without zod in the bundle.
 `zodSafeParse: false` turns the rewrite off.
 
 ### rjsf: `<Form schema={schema} validator={validator} />`

@@ -178,3 +178,19 @@ const __ataZodResolver = (compiled, T, P, ro, R, F) => async (values, _, options
 const __ataZPath = (P, ip) => { const out = []; let pat = ''; if (ip) for (const seg of ip.slice(1).split('/')) { const n = P[pat]; if (n && n.a) { out.push(+seg); pat += '/*' } else { out.push(__ataZSeg(seg)); pat += '/' + seg } } return out }
 const __ataZSchema = (compiled, T, P, R, F) => ({ safeParse: (values) => { const r = __ataZRun(compiled.validate, T, P, values, R, F); return r.issues === undefined ? { success: true, data: r.data } : { success: false, error: { issues: r.issues.map((i) => ({ code: i[1], path: __ataZPath(P, i[0]), message: i[2] })) } } } })
 //</parse>
+//<flat>
+// error.flatten() and z.flattenError(error), with no mapper: the messages
+// under the first key of each path, and those of the whole in formErrors.
+// A key is the object's own, as in zod: one named like a method of every
+// object, or __proto__, is a field like any other.
+const __ataZFlat = (error) => {
+  const formErrors = []; const fieldErrors = {}
+  for (const i of error.issues) {
+    if (i.path.length === 0) { formErrors.push(i.message); continue }
+    const k = i.path[0]
+    if (!Object.prototype.hasOwnProperty.call(fieldErrors, k)) { if (k === '__proto__') Object.defineProperty(fieldErrors, k, { value: [], writable: true, enumerable: true, configurable: true }); else fieldErrors[k] = [] }
+    fieldErrors[k].push(i.message)
+  }
+  return { formErrors, fieldErrors }
+}
+//</flat>

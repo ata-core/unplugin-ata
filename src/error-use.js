@@ -37,12 +37,19 @@ const written = (m) => { const p = m.__parent; return !!p && ((p.type === 'Assig
 // names every handler in the file uses.
 // What zod's safeParse returns, followed the same way: `success` and `data`
 // of the result, and each issue under `error.issues` through its code, path
-// and message. A result, its error or an issue used any other way (returned,
-// handed to a call, `error.flatten()`, `error.message`) answers false, and
-// the schema stays zod's.
-const ZOD = { fields: new Set(['code', 'path', 'message']), result: new Set(['success', 'data']), list: 'issues', holder: 'error' }
+// and message. The error may also be flattened, `error.flatten()` or
+// `z.flattenError(error)` with no mapper: what that gives is made of the
+// messages and the first key of each path, so the page can make it, and the
+// calls are handed back for the build to rewrite. A result, its error or an
+// issue used any other way (returned, handed to another call,
+// `error.message`) answers null, and the schema stays zod's.
 const ATA = { fields: PLAIN_FIELDS, result: RESULT_FIELDS, list: 'errors', holder: null }
-export const readsOnlyIssueFields = (calls, scan) => follows(calls, scan, ZOD)
+// null, or the flatten calls found: [{ call, error }], `error` the node the
+// call flattens. `zod` is the name zod has in the file.
+export const readsOnlyIssueFields = (calls, scan, zod) => {
+  const flat = []
+  return follows(calls, scan, { fields: new Set(['code', 'path', 'message']), result: new Set(['success', 'data']), list: 'issues', holder: 'error', zod, flat }) ? flat : null
+}
 export const readsOnlyPlainFields = (calls, scan) => follows(calls, scan, ATA)
 
 function follows(calls, scan, shape) {
@@ -125,7 +132,14 @@ function follows(calls, scan, shape) {
   const holder = (node0) => {
     const [node, p] = through(node0)
     if (!p) return false
-    if (isMember(p) && p.object === node) return named(p) === shape.list && !written(p) && errors(p)
+    if (isMember(p) && p.object === node) {
+      // error.flatten(): any use of what it returns is a use of plain data.
+      const call = p.__parent
+      if (named(p) === 'flatten' && isCall(call) && call.callee === p && call.arguments.length === 0 && call.type === 'CallExpression' && p.type === 'MemberExpression') { shape.flat.push({ call, error: node }); return true }
+      return named(p) === shape.list && !written(p) && errors(p)
+    }
+    // z.flattenError(error)
+    if (p.type === 'CallExpression' && p.arguments.length === 1 && p.arguments[0] === node && shape.zod && p.callee.type === 'MemberExpression' && !p.callee.computed && p.callee.object.type === 'Identifier' && p.callee.object.name === shape.zod && p.callee.property.name === 'flattenError') { shape.flat.push({ call: p, error: node }); return true }
     if (p.type === 'VariableDeclarator' && p.init === node && constOf(p)) {
       if (p.id.type === 'Identifier') return all(p.id.name, p, holder)
       if (p.id.type === 'ObjectPattern') return pattern(p.id, (k) => k === shape.list, (k, value) => value.type === 'Identifier' && all(value.name, p, errors, value))

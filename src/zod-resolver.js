@@ -38,13 +38,13 @@ const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*
 // The run-time text for a file: the part that rewrites strings and the part
 // that runs refine functions only where a plan of the file needs them. The
 // rest reaches them only through a plan that says so.
-export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
+export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
 export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
 // the real toNestErrors, validateFieldsNatively and appendErrors.
-export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { run: __ataZRun, resolver: __ataZodResolver, schema: __ataZSchema }')(nest, native, append)
+export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { run: __ataZRun, resolver: __ataZodResolver, schema: __ataZSchema, flat: __ataZFlat }')(nest, native, append)
 const RT = zodRuntime(null, null, null)
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER

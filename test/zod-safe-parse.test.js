@@ -40,8 +40,10 @@ describe('safeParse compiled away: the plan against zod', () => {
       taken++
       const mine = RT.schema({ validate: (d) => v.validate(d) }, plan.table, plan.paths, plan.refines, plan.fns)
       for (const d of [...docs, ...ROOTS]) {
-        const want = read(schema.safeParse(clone(d)))
-        assert.equal(show(read(mine.safeParse(clone(d)))), show(want), `on ${show(d)}`)
+        const theirs = schema.safeParse(clone(d)); const got = mine.safeParse(clone(d))
+        const want = read(theirs)
+        assert.equal(show(read(got)), show(want), `on ${show(d)}`)
+        if (!want.success) { assert.equal(show(RT.flat(got.error)), show(theirs.error.flatten()), `flatten on ${show(d)}`); assert.equal(show(RT.flat(got.error)), show(z.flattenError(theirs.error))) }
         answers++
         if (!want.success) { rejected++; if (want.issues.some((i) => i.path.some((x) => typeof x === 'number'))) indexed++ }
       }
@@ -50,6 +52,34 @@ describe('safeParse compiled away: the plan against zod', () => {
     assert.ok(taken >= 100, `only ${taken} of 220 forms were taken (${JSON.stringify(why)})`)
     assert.ok(rejected > answers / 2 && rejected < answers, `${rejected} of ${answers} answers were rejections`)
     if (seed === 1) assert.ok(indexed >= 100, `only ${indexed} answers had an index in a path`)
+  })
+  it('flattens an error as zod does, a field named like a method of every object included', () => {
+    // The keys come from a refine's path: a field of those names is one zod
+    // reads from the prototype of what it is given, and such a schema is
+    // kept as written by the build's own check.
+    const schema = z.object({ a: z.object({ b: z.string() }), l: z.array(z.string()) }).refine(() => false, 'Whole').refine(() => false, { message: 'Proto', path: ['__proto__'] }).refine(() => false, { message: 'Has', path: ['hasOwnProperty'] }).refine(() => false, { message: 'Str', path: ['toString', 'deeper'] }).refine(() => false, { message: 'Str too', path: ['toString'] })
+    const plan = planZod(schema)
+    assert.equal(parseRefusal(plan), null)
+    const v = new ata.Validator(plan.json, { richErrors: false })
+    assert.equal(selfCheck(schema, plan, (d) => v.validate(d), true), null)
+    const mine = RT.schema({ validate: (d) => v.validate(d) }, plan.table, plan.paths, plan.refines, plan.fns)
+    let seen = 0
+    for (const d of [{}, { a: { b: 1 }, l: [1, 'a', 2] }, { a: { b: 'x' }, l: [] }, { a: { b: 'x' }, l: ['a'], extra: 1 }, null]) {
+      const want = schema.safeParse(clone(d)); const got = mine.safeParse(clone(d))
+      assert.equal(got.success, false)
+      const flat = RT.flat(got.error)
+      assert.equal(show(flat), show(want.error.flatten()), `on ${show(d)}`)
+      assert.deepEqual(Object.keys(flat.fieldErrors), Object.keys(want.error.flatten().fieldErrors))
+      if (Object.prototype.hasOwnProperty.call(flat.fieldErrors, '__proto__')) seen++
+    }
+    assert.ok(seen >= 2)
+  })
+  it('keeps a schema with a field every object inherits, which zod reads from the prototype', () => {
+    for (const schema of [z.object({ toString: z.string() }), z.object({ constructor: z.number().optional(), a: z.string() })]) {
+      const plan = planZod(schema)
+      const v = new ata.Validator(plan.json, { richErrors: false })
+      assert.notEqual(selfCheck(schema, plan, (d) => v.validate(d)) || selfCheck(schema, plan, (d) => v.validate(d), true), null)
+    }
   })
   it('refuses a refine whose path the page could not write as zod does', () => {
     const cases = [
@@ -159,6 +189,32 @@ export type { Signup }
     const local = z.object({ name: z.string().min(2), on: z.boolean() })
     for (const d of [{ name: 'ab', on: true, x: 1 }, { name: 'a' }, null]) { const r = local.safeParse(clone(d)); assert.equal(show(mod.inside(clone(d))), show(r.success ? r.data : r.error.issues.map((i) => i.path.join('/') + ' ' + i.code))) }
   })
+  it('rewrites error.flatten() and z.flattenError(error), and leaves zod for a mapper or another helper', async () => {
+    const SRC = `z.object({ name: z.string().min(2, 'Too short'), age: z.int().optional() }).refine((v) => v.name !== 'root', 'Not root')`
+    const { text, mod } = await build(`import { z } from 'zod'
+const schema = ${SRC}
+export const a = (d: unknown) => { const r = schema.safeParse(d); if (!r.success) return { errors: r.error.flatten().fieldErrors }; return { data: r.data } }
+export const b = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : z.flattenError(r.error) }
+export const c = (d: unknown) => { const { success, error } = schema.safeParse(d); if (success) return null; const flat = error.flatten(); return [flat.formErrors, Object.keys(flat.fieldErrors)] }
+export const e = (d: unknown) => schema.safeParse(d).error?.issues.map((i) => i.message) ?? []
+`)
+    assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
+    assert.match(text, /__ataZFlat/)
+    const schema = real(SRC)
+    for (const d of [{ name: 'ab' }, { name: 'a', age: 1.5 }, { name: 'root' }, {}, null]) {
+      const r = schema.safeParse(clone(d))
+      assert.equal(show(mod.a(clone(d))), show(r.success ? { data: r.data } : { errors: r.error.flatten().fieldErrors }), `a on ${show(d)}`)
+      assert.equal(show(mod.b(clone(d))), show(r.success ? null : z.flattenError(r.error)), `b on ${show(d)}`)
+      assert.equal(show(mod.c(clone(d))), show(r.success ? null : [r.error.flatten().formErrors, Object.keys(r.error.flatten().fieldErrors)]), `c on ${show(d)}`)
+    }
+    const none = await build(`import { z } from 'zod'\nconst schema = z.object({ a: z.string() })\nexport const f = (d: unknown) => schema.safeParse(d).success\n`)
+    assert.doesNotMatch(none.text, /__ataZFlat/)
+    for (const use of [`r.error.flatten((i) => i.code)`, `z.flattenError(r.error, (i) => i.code)`, `z.treeifyError(r.error)`, `z.prettifyError(r.error)`, `r.error.format()`, `other.flattenError(r.error)`]) {
+      const kept = await build(`import { z } from 'zod'\nconst other = { flattenError: (e: unknown) => e }\nconst schema = z.object({ a: z.string() })\nexport const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : ${use} }\n`)
+      assert.match(kept.text, HAS_ZOD, use)
+      assert.doesNotMatch(kept.text, /__ataZSchema/, use)
+    }
+  })
   it('compiles a schema a resolver and a safeParse both use', async () => {
     const SRC = `z.object({ email: z.email(), age: z.int().optional() })`
     const { text, mod } = await build(`import { z } from 'zod'\nimport { zodResolver } from '@hookform/resolvers/zod'\nconst schema = ${SRC}\nexport const resolver = zodResolver(schema)\nexport const check = ${READ}\n`)
@@ -173,7 +229,6 @@ export type { Signup }
       `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : r.error }`,
       `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : r.error.issues }`,
       `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : r.error.message }`,
-      `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : r.error.flatten() }`,
       `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : z.treeifyError(r.error) }`,
       `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : r.error.issues.map((i) => i) }`,
       `export const f = (d: unknown) => { const r = schema.safeParse(d); return r.success ? null : r.error.issues.map((i) => i.input) }`,

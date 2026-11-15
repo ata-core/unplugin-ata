@@ -83,8 +83,8 @@ export interface Options {
    * `schema.safeParse(value)` on a zod 4 schema is answered by a check
    * compiled at build time, and zod leaves that file's bundle, where every
    * use of the schema in the file is such a call and what it returns is read
-   * only through `success`, `data` and the `code`, `path` and `message` of
-   * each of `error.issues`. The compiled schema is held to zod's own
+   * only through `success`, `data`, the `code`, `path` and `message` of
+   * each of `error.issues`, and `error.flatten()`. The compiled schema is held to zod's own
    * safeParse at build time before anything is replaced. `false` leaves
    * every schema as written. Default true.
    */

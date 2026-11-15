@@ -1100,6 +1100,7 @@ export function compileAway(code, id, ata, options) {
   // Schemas whose safeParse the build answers, and the constants that stand
   // for them in the file, written after the compiled modules.
   let parseDone = 0
+  let zodFlat = false
   const zodSchemas = []
   const parseKeep = (call, name, reason) => { if (options && Array.isArray(options.kept)) options.kept.push({ line: call.loc ? call.loc.start.line : null, reason: `${name}.safeParse(): ${reason}`, zod: true, parse: true }) }
   if (zodFile && !virtual) {
@@ -1196,7 +1197,8 @@ export function compileAway(code, id, ata, options) {
         // A name that is not a schema the build reads (an import from a
         // package, a value made at run time) is not zod's to report on.
         if (!from) { if (zodFile.consts.has(name) ? !!zodFile.zod && !/^(?:Object|Array|(?:Arrow)?Function|Class|New)Expression$|Literal$/.test(zodFile.consts.get(name).init.type) : zodModule) parseKeep(first, name, why); continue }
-        if (!readsOnlyIssueFields(uses.map((u) => u.call), scan)) { parseKeep(first, name, 'what it returns is used in a way the build does not follow: read through more than `success`, `data` and the `code`, `path` and `message` of each of `error.issues`, or returned, stored or handed to a call'); continue }
+        const flat = readsOnlyIssueFields(uses.map((u) => u.call), scan, zodFile.zod && declared.get(zodFile.zod.local) === 1 ? zodFile.zod.local : null)
+        if (flat === null) { parseKeep(first, name, 'what it returns is used in a way the build does not follow: read through more than `success`, `data`, the `code`, `path` and `message` of each of `error.issues` and `error.flatten()`, or returned, stored or handed to a call'); continue }
         let plan = null; let ir = null
         try {
           const schema = new Function(from.local, from.text)(from.z)
@@ -1210,7 +1212,7 @@ export function compileAway(code, id, ata, options) {
           ir = irFor(plan.json, { richErrors: false }, false)
         } catch (e) { parseKeep(first, name, e && e.name === 'ZodRefused' ? e.message : `the schema could not be built here (${String(e && e.message).slice(0, 80)})`); continue }
         if (!ir) { parseKeep(first, name, 'ata-validator wrote no module for the schema'); continue }
-        found.push({ parse: true, name, uses, call: first, names: from.names, imp: from.imp, plan, ir })
+        found.push({ parse: true, name, uses, flat, call: first, names: from.names, imp: from.imp, plan, ir })
       }
     }
     // A constant or an import something else in the file uses as a value
@@ -1219,7 +1221,8 @@ export function compileAway(code, id, ata, options) {
     const state = () => {
       const names = new Set(take.flatMap((f) => f.names))
       const removed = new Set([...names].map((n) => zodFile.consts.get(n).stmt))
-      const calls = new Set(take.flatMap((f) => f.parse ? f.uses.map((u) => u.member) : [f.call]))
+      // A z.flattenError(...) the build rewrites no longer names zod.
+      const calls = new Set(take.flatMap((f) => f.parse ? [...f.uses.map((u) => u.member), ...f.flat.filter((x) => x.call.arguments.length === 1).map((x) => x.call.callee)] : [f.call]))
       return { names, removed, calls, uses: usesOf(ast, new Set([...names, ...take.filter((f) => f.imp).map((f) => f.imp.name)]), removed, calls) }
     }
     for (;;) {
@@ -1244,6 +1247,12 @@ export function compileAway(code, id, ata, options) {
           const local = `__ataZS${index}`
           zodSchemas.push(`const ${local} = /*#__PURE__*/ __ataZSchema(__ataCompiled${index}, ${lit(f.plan.table)}, ${lit(f.plan.paths)}${f.plan.refines ? `, ${lit(f.plan.refines)}, [${f.plan.fns.map((fn) => `(${String(fn)})`).join(', ')}]` : ''});\n`)
           for (const u of f.uses) s.overwrite(u.ref.start, u.ref.end, local)
+          // error.flatten() and z.flattenError(error) become one call on the error.
+          for (const x of f.flat) {
+            if (x.call.arguments.length === 1) s.overwrite(x.call.callee.start, x.call.callee.end, '__ataZFlat')
+            else { s.appendLeft(x.error.start, '__ataZFlat('); s.overwrite(x.error.end, x.call.end, ')') }
+            zodFlat = true
+          }
           parseDone++
           continue
         }
@@ -1488,7 +1497,7 @@ export function compileAway(code, id, ata, options) {
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (resolverCalls.size) addImport(resolverKind === 'own' ? OWN_RESOLVER : `import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
-  if (zodDone || parseDone) addImport((zodDone ? ZOD_RUNTIME_IMPORTS : '') + zodRuntimeFor(zodRewrites, zodRefines, zodStrict, zodDone > 0, parseDone > 0))
+  if (zodDone || parseDone) addImport((zodDone ? ZOD_RUNTIME_IMPORTS : '') + zodRuntimeFor(zodRewrites, zodRefines, zodStrict, zodDone > 0, parseDone > 0, zodFlat))
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)
