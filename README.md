@@ -536,8 +536,11 @@ and one that imports its schema from `lib/` and reads
 `error.flatten().fieldErrors`, the chunk that held zod (30,489 B under
 Turbopack, 24,430 B under webpack) is gone, and all the client JavaScript of
 the build together goes from 205,915 B to 180,859 B gzipped under Turbopack
-and from 309,323 B to 290,142 B under webpack. The pages were built, not
-driven in a browser.
+and from 309,323 B to 290,142 B under webpack. Driven in Chrome with 23
+documents typed into the two forms, the pages show the same result with and
+without the plugin under both bundlers, and the JavaScript the signup page
+loads over the wire goes from 166,420 B to 138,291 B under Turbopack and from
+158,862 B to 136,282 B under webpack.
 
 It costs build time: each schema is built with the application's zod and held
 to it on a few hundred documents. On 200 files of one six-field schema each,
