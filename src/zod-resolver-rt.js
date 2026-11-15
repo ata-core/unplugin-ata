@@ -1,6 +1,6 @@
-// Written into a file whose zodResolver call the build replaced (the text of
-// this file, after the imports the build adds: __ataZNest, __ataZNative,
-// __ataZAppend). It turns the errors of a compiled check into the issues zod
+// Written into a file whose zodResolver call or zod schema the build replaced
+// (the text of this file; where a resolver is written, after the imports the
+// build adds for it: __ataZNest, __ataZNative, __ataZAppend). It turns the errors of a compiled check into the issues zod
 // reports, from tables the build learned by asking zod, and answers as
 // zodResolver does. src/zod-resolver.js runs the same text at build time to
 // hold each form to zod before its call is replaced.
@@ -153,6 +153,7 @@ const __ataZRun = (validate, T, P, values, R, F) => {
   const issues = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F)
   return issues.length ? { issues } : { data: __ataZStrip(P, '', doc) }
 }
+//<resolver>
 const __ataZodResolver = (compiled, T, P, ro, R, F) => async (values, _, options) => {
   const r = __ataZRun(compiled.validate, T, P, values, R, F)
   if (r.issues === undefined) {
@@ -168,3 +169,12 @@ const __ataZodResolver = (compiled, T, P, ro, R, F) => async (values, _, options
   }
   return { values: {}, errors: __ataZNest(errors, options) }
 }
+//</resolver>
+//<parse>
+// schema.safeParse(value), for a file that reads what it returns through
+// success, data, and the code, path and message of each issue, and through
+// nothing else (src/error-use.js decides that). A path is zod's: a key as a
+// string, an item of an array by its index as a number.
+const __ataZPath = (P, ip) => { const out = []; let pat = ''; if (ip) for (const seg of ip.slice(1).split('/')) { const n = P[pat]; if (n && n.a) { out.push(+seg); pat += '/*' } else { out.push(__ataZSeg(seg)); pat += '/' + seg } } return out }
+const __ataZSchema = (compiled, T, P, R, F) => ({ safeParse: (values) => { const r = __ataZRun(compiled.validate, T, P, values, R, F); return r.issues === undefined ? { success: true, data: r.data } : { success: false, error: { issues: r.issues.map((i) => ({ code: i[1], path: __ataZPath(P, i[0]), message: i[2] })) } } } })
+//</parse>

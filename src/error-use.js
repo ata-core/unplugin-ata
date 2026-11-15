@@ -35,7 +35,18 @@ const written = (m) => { const p = m.__parent; return !!p && ((p.type === 'Assig
 // `scan` is compile-away's walk (declarations counted, value references
 // listed), asked here of one function at a time so that `r` and `e` may be
 // names every handler in the file uses.
-export function readsOnlyPlainFields(calls, scan) {
+// What zod's safeParse returns, followed the same way: `success` and `data`
+// of the result, and each issue under `error.issues` through its code, path
+// and message. A result, its error or an issue used any other way (returned,
+// handed to a call, `error.flatten()`, `error.message`) answers false, and
+// the schema stays zod's.
+const ZOD = { fields: new Set(['code', 'path', 'message']), result: new Set(['success', 'data']), list: 'issues', holder: 'error' }
+const ATA = { fields: PLAIN_FIELDS, result: RESULT_FIELDS, list: 'errors', holder: null }
+export const readsOnlyIssueFields = (calls, scan) => follows(calls, scan, ZOD)
+export const readsOnlyPlainFields = (calls, scan) => follows(calls, scan, ATA)
+
+function follows(calls, scan, shape) {
+  const PLAIN_FIELDS = shape.fields; const RESULT_FIELDS = shape.result
   const scopes = new Map()
   const scopeOf = (node) => { let n = node.__parent; while (n && !isFunction(n) && n.type !== 'Program') n = n.__parent; return n || null }
   // The references to `name`, declared at `at`, or null where the name is
@@ -110,6 +121,21 @@ export function readsOnlyPlainFields(calls, scan) {
     }
     return false
   }
+  // `node` evaluates to what holds the list (zod's `error`), or to nothing.
+  const holder = (node0) => {
+    const [node, p] = through(node0)
+    if (!p) return false
+    if (isMember(p) && p.object === node) return named(p) === shape.list && !written(p) && errors(p)
+    if (p.type === 'VariableDeclarator' && p.init === node && constOf(p)) {
+      if (p.id.type === 'Identifier') return all(p.id.name, p, holder)
+      if (p.id.type === 'ObjectPattern') return pattern(p.id, (k) => k === shape.list, (k, value) => value.type === 'Identifier' && all(value.name, p, errors, value))
+      return false
+    }
+    if ((p.type === 'IfStatement' || p.type === 'ConditionalExpression') && p.test === node) return true
+    if (p.type === 'UnaryExpression' && p.operator === '!') return true
+    if (p.type === 'LogicalExpression' && p.operator === '&&' && p.left === node) return true
+    return false
+  }
   // `node` evaluates to what validate() returned.
   const result = (node0) => {
     const [node, p] = through(node0)
@@ -119,14 +145,15 @@ export function readsOnlyPlainFields(calls, scan) {
       const k = named(p)
       if (k === null || written(p)) return false
       if (RESULT_FIELDS.has(k)) return true
-      return k === 'errors' && errors(p)
+      return shape.holder ? k === shape.holder && holder(p) : k === shape.list && errors(p)
     }
     if (p.type === 'VariableDeclarator' && p.init === node && constOf(p)) {
       if (p.id.type === 'Identifier') return all(p.id.name, p, result)
       if (p.id.type === 'ObjectPattern') {
-        return pattern(p.id, (k) => RESULT_FIELDS.has(k) || k === 'errors', (k, value) => {
-          if (k !== 'errors') return true
-          return value.type === 'Identifier' && all(value.name, p, errors, value)
+        const listed = shape.holder || shape.list
+        return pattern(p.id, (k) => RESULT_FIELDS.has(k) || k === listed, (k, value) => {
+          if (k !== listed) return true
+          return value.type === 'Identifier' && all(value.name, p, shape.holder ? holder : errors, value)
         })
       }
     }

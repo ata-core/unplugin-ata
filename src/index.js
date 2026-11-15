@@ -192,7 +192,7 @@ export const unpluginFactory = (userOptions = {}) => {
       // plans for one shared interpreter where that makes what a page loads
       // smaller (src/compile-away.js tableFormsPay), compiled code otherwise.
       // A file the scan did not see keeps compiled code.
-      session.zodConfigured = userOptions.compileAway !== false && userOptions.zodResolver !== false ? scanOnce(session).zodConfigured === true : false
+      session.zodConfigured = userOptions.compileAway !== false && (userOptions.zodResolver !== false || userOptions.zodSafeParse !== false) ? scanOnce(session).zodConfigured === true : false
     session.tableDecision = false
       const apiForTable = userOptions.compileAway !== false && userOptions.ir !== false ? await session.api() : null
       if (apiForTable !== null && (userOptions.ir === true || apiForTable.irDefault) && (userOptions.table === undefined || userOptions.table === 'auto')) {
@@ -228,8 +228,11 @@ export const unpluginFactory = (userOptions = {}) => {
     },
 
     async transform(code, id, hook) {
-      if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata') && !code.includes('@hookform/resolvers/zod')) return null
+      const mayParse = userOptions.zodSafeParse !== false && code.includes('.safeParse(')
+      if (!code.includes('ata-validator') && !code.includes('@rjsf/validator-ata') && !code.includes('@hookform/resolvers/zod') && !mayParse) return null
       if (session.ready) await session.ready
+      // Known only once the build's scan for a zod locale has run.
+      const parseOn = mayParse && session.zodConfigured === false
       const api = await session.api()
       if (!api.compiledModuleFor) {
         // Only a caller who asked for it hears that it could not happen; on
@@ -250,8 +253,8 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured === false, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
-      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced - (out.zod || 0) : 0, kinds: out ? out.kinds : null, kept, zod: out ? out.zod || 0 : 0 })
+      const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured === false, zodSafeParse: parseOn, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced - (out.zod || 0) : 0, kinds: out ? out.kinds : null, kept, zod: out ? out.zod || 0 : 0, zodParse: out ? out.zodParse || 0 : 0 })
       return out ? { code: out.code, map: out.map } : null
     },
 
@@ -297,16 +300,25 @@ export const unpluginFactory = (userOptions = {}) => {
       // on that page, not ata-validator's runtime.
       let zod = 0
       const zodKept = []
+      // Schemas whose safeParse the build answers, counted apart again.
+      let parsed = 0
+      const parseKept = []
       for (const [file, r] of session.report) {
         replaced += r.replaced
         zod += r.zod || 0
+        parsed += r.zodParse || 0
         if (r.kinds) for (const k of Object.keys(kinds)) kinds[k] += r.kinds[k] || 0
-        for (const k of r.kept) (k.zod ? zodKept : kept).push(`${path.relative(session.root || process.cwd(), file)}:${k.line ?? '?'} ${k.reason}`)
+        for (const k of r.kept) (k.parse ? parseKept : k.zod ? zodKept : kept).push(`${path.relative(session.root || process.cwd(), file)}:${k.line ?? '?'} ${k.reason}`)
       }
       session.report.clear()
       if (zod + zodKept.length > 0) {
         session.logger?.info?.(`[unplugin-ata] zodResolver: ${zod} of ${zod + zodKept.length} call${zod + zodKept.length === 1 ? '' : 's'} compiled at build time${zodKept.length ? `, ${zodKept.length} left as written with zod` : ', zod is out of those files'}`)
         for (const line of zodKept) session.logger?.info?.(`[unplugin-ata] left as written: ${line}`)
+      }
+      if (parsed + parseKept.length > 0) {
+        const n = parsed + parseKept.length
+        session.logger?.info?.(`[unplugin-ata] safeParse: ${parsed} of ${n} zod schema${n === 1 ? '' : 's'} compiled at build time${parseKept.length ? `, ${parseKept.length} left as written with zod` : ''}`)
+        for (const line of parseKept) session.logger?.info?.(`[unplugin-ata] left as written: ${line}`)
       }
       if (replaced === 0 && kept.length === 0) return
       // What each compiled validator carries, so a reader can tell whether the

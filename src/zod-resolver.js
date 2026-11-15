@@ -38,13 +38,13 @@ const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*
 // The run-time text for a file: the part that rewrites strings and the part
 // that runs refine functions only where a plan of the file needs them. The
 // rest reaches them only through a plan that says so.
-export const zodRuntimeFor = (rewrites, refines, strict) => bare(without(without(without(RT_TEXT, rewrites ? '-' : 'rewrites'), refines ? '-' : 'refines'), strict ? '-' : 'strict'))
+export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
 export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
 // the real toNestErrors, validateFieldsNatively and appendErrors.
-export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { run: __ataZRun, resolver: __ataZodResolver }')(nest, native, append)
+export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { run: __ataZRun, resolver: __ataZodResolver, schema: __ataZSchema }')(nest, native, append)
 const RT = zodRuntime(null, null, null)
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER
@@ -80,6 +80,9 @@ export function planZod (schema) {
   // refine(): [pattern, rank, function, message, path, stops], in the order
   // zod runs them (a node's children before the node), and the functions.
   const refines = []; const fns = []
+  // A refine whose path names an index: a resolver joins a path into one
+  // name, where 0 and '0' are the same; an issue's path keeps them apart.
+  let indexed = false
   // url(): zod trims the value and asks the platform's URL parser, the
   // parser the page will ask too; it is run on the page as a refine is, and
   // the value it hands back is the trimmed one.
@@ -106,6 +109,7 @@ export function planZod (schema) {
       message = said[0]
     }
     if (!Array.isArray(d.path || []) || (d.path || []).some((x) => typeof x !== 'string' && typeof x !== 'number')) no('a refine with a path that is not names and indexes is not carried')
+    if ((d.path || []).some((x) => typeof x === 'number')) indexed = true
     refines.push([ip, rank, fns.push(d.fn) - 1, message, (d.path || []).map((x) => '/' + esc(String(x))).join(''), d.abort ? 1 : 0])
   }
   // A refusal names the field it is about, as the form names it.
@@ -275,7 +279,23 @@ export function planZod (schema) {
   }
   if (schema._zod.def.type !== 'object') no(schema._zod.def.type === 'pipe' ? 'the schema is a transform or a pipe, which is not carried' : 'the schema is not an object')
   const json = walk(schema, '#', '')
-  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns, strict: paths[''].z === 1 }
+  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns, strict: paths[''].z === 1, indexed }
+}
+
+// Why a plan cannot answer safeParse, where it can answer a resolver: an
+// issue's path is rebuilt on the page from the place of the issue, a key as a
+// string and an item of an array as a number, and a refine's own `path` is
+// only known as text. So one that names an index, or that leads through an
+// array, is refused; null where there is none.
+export function parseRefusal (plan) {
+  if (plan.indexed) return 'a refine whose path names an index is not carried for safeParse'
+  for (const r of plan.refines || []) {
+    let pat = r[0]
+    if (r[4] === '') continue
+    if (plan.paths[pat] && plan.paths[pat].a) return 'a refine with a path, written on an array, is not carried for safeParse'
+    for (const seg of r[4].slice(1).split('/')) { pat += '/' + seg; if (plan.paths[pat] && plan.paths[pat].a) return 'a refine whose path leads into an array is not carried for safeParse' }
+  }
+  return null
 }
 
 // The zod a file imports, as that file resolves it: the value its local name
@@ -297,7 +317,7 @@ const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefin
 // that document with each field in turn missing and holding each value of
 // the pool, and on documents with several fields wrong. `validate` is the
 // check compiled from plan.json with plain errors.
-export function selfCheck (schema, plan, validate) {
+export function selfCheck (schema, plan, validate, parse = false) {
   const leaves = []; const arrays = []; const objects = []
   const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = copyOf(d[k]); return o }
   const good = (node, ip) => {
@@ -327,6 +347,8 @@ export function selfCheck (schema, plan, validate) {
   const copy = copyOf
   const set = (d, ip, v, drop) => { const o = copy(d); let at = o; for (let i = 0; i < ip.length - 1; i++) at = at[ip[i]]; if (drop) delete at[ip[ip.length - 1]]; else at[ip[ip.length - 1]] = v; return o }
   const docs = [base, {}, { ...copy(base), ['\u0000extra']: 1 }]
+  // safeParse is handed anything, not only what a form holds.
+  if (parse) docs.push(undefined, null, 'a', '', 0, 1, NaN, true, false, [], [base], new Date(0), Object.assign(Object.create({ inherited: 1 }), copy(base)))
   for (const ip of leaves) { docs.push(set(base, ip, undefined, true)); for (const v of POOL) docs.push(set(base, ip, v, false)) }
   // A value of the pool in the first item of an array that is also one short
   // of its minimum: what zod says about the item decides whether it still
@@ -361,6 +383,19 @@ export function selfCheck (schema, plan, validate) {
   // Several fields wrong at once, by a fixed sequence.
   let seed = 7; const next = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >>> 8) % n }
   for (let i = 0; i < 60 && leaves.length > 1; i++) { let d = base; for (const ip of leaves) if (next(3) === 0) d = set(d, ip, POOL[next(POOL.length)], next(5) === 0); for (const ip of objects) if (next(4) === 0) d = extra(d, ip, [['\u0000extra', 1]]); docs.push(d) }
+  // The answer of safeParse itself: success, the data, and each issue's
+  // code, path and message, the path as zod gives it (a number for an index).
+  if (parse) {
+    const mine = RT.schema({ validate }, plan.table, plan.paths, plan.refines, plan.fns)
+    for (const d of docs) {
+      const want = schema.safeParse(copy(d)); const got = mine.safeParse(copy(d))
+      if (want.success !== got.success) return `verdict on ${show(d)}`
+      if (want.success) { if (show(want.data) !== show(got.data)) return `data on ${show(d)}`; continue }
+      const theirs = want.error.issues.map((i) => ({ code: i.code, path: i.path, message: i.message }))
+      if (show(got.error.issues) !== show(theirs)) return `issues on ${show(d)}: zod ${show(theirs)}, the build ${show(got.error.issues)}`
+    }
+    return null
+  }
   for (const d of docs) {
     const want = schema.safeParse(copy(d))
     const got = RT.run(validate, plan.table, plan.paths, copy(d), plan.refines, plan.fns)
