@@ -266,6 +266,7 @@ prints the same as data. A build prints the same lines in its report.
 | `errorFields` | `'auto'` | Write a validator with plain errors where the file reads each error only through `keyword`, `instancePath`, `schemaPath`, `params` and `message`. `'all'` keeps rich errors everywhere. See [errorFields](#errorfields-rich-errors-only-where-they-are-read). |
 | `smallFormats` | `'auto'` | A written module checks `email`, `uri` and `uri-reference` with ata-validator's smaller regular expressions, which give the same answers as its scanners in fewer bytes and take about 20 to 35 ns longer a check. `'auto'` takes them where the build knows the code goes to a browser: webpack and Rspack by the compiler's target, Vite outside an ssr build, esbuild by `platform`, Turbopack by the loader's target. Rollup, Rolldown and Bun keep the scanners unless you pass `true`. Needs ata-validator 1.64.0; an older one keeps the scanners. |
 | `zodResolver` | `true` | Compile `zodResolver(schema)` from `@hookform/resolvers/zod` away where the schema is written in the file from parts the build carries, so zod leaves that page. See [react-hook-form with zod](#react-hook-form-with-zod-zodresolverschema). |
+| `zodSafeParse` | `true` | Answer `schema.safeParse(value)` on a zod 4 schema with a check compiled at build time, where the file uses the schema for nothing else and reads the result only through `success`, `data` and each issue's `code`, `path` and `message`, so zod leaves that file. See [zod without a form library](#zod-without-a-form-library-schemasafeparsevalue). |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what the replaceable calls a page loads together would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
 ## compileAway: keep `new Validator`, drop the compiler
@@ -464,6 +465,86 @@ and a call that passes options. An application that changes zod's messages
 as a whole (`z.config(...)`, a locale, a global error map) gets no call
 replaced, since the build would learn messages the page does not show.
 `zodResolver: false` turns the rewrite off.
+
+### zod without a form library: `schema.safeParse(value)`
+
+A file that checks a value with zod itself is compiled the same way:
+
+```ts
+import { z } from 'zod'
+
+const signup = z.strictObject({
+  email: z.email(),
+  password: z.string().min(8).max(72),
+  age: z.int().min(13).optional(),
+  terms: z.literal(true),
+})
+
+export function check (values: unknown) {
+  const result = signup.safeParse(values)
+  if (result.success) return { data: result.data }
+  const errors: Record<string, string> = {}
+  for (const issue of result.error.issues) errors[issue.path.join('.')] = issue.message
+  return { errors }
+}
+```
+
+The schema becomes a constant with a `safeParse` of its own, the calls stay as
+they are written, and the zod import leaves the file. What comes back is what
+zod gives for the parts the file reads: `success`, `data` (unknown keys
+dropped, strings rewritten as the schema says), and for each issue its `code`,
+its `path` (a key as a string, an item of an array as a number) and its
+`message`, in zod's order.
+
+That is also the limit. The object is not a `ZodError` and an issue has no
+other field, so a schema is replaced only where the build can see that nothing
+else is read: every use of the schema in the file is `name.safeParse(one
+argument)`, and each result is read through `success`, `data`, `error.issues`
+and those three fields of an issue, directly, through a `const`, a
+destructuring pattern, a `for...of`, or `map`, `filter`, `find`, `some`,
+`every` and `forEach` with an arrow function. `error.flatten()` and
+`z.flattenError(error)` without a mapper are carried too: each becomes a call
+that makes the same `{ formErrors, fieldErrors }` from the issues, so
+`result.error.flatten().fieldErrors` works as written. A result that is
+returned, stored, spread or handed to a call keeps zod, and so do a flatten
+with a mapper, `z.treeifyError(error)`, `z.prettifyError(error)`,
+`error.format()`, `error.message`, `schema.parse()`, `safeParseAsync` and a
+schema that is exported or used as a value. The report names each schema left
+as written and why, and `unplugin-ata scan` lists them without building.
+
+The schemas carried are the ones `zodResolver` carries, above, read from the
+file or from a module of the project the same way. Two more are refused here,
+because a path is an array and not a joined name: a `refine` whose `path`
+names an index, and one whose `path` leads into an array. An application that
+sets zod's messages as a whole gets nothing replaced.
+
+Before a schema is replaced the build holds it to zod's `safeParse` on the
+documents it makes for a resolver and on values that are not objects at all,
+comparing the verdict, the data and every issue with its path. A schema with a
+field named like something every object inherits (`toString`, `constructor`)
+fails that check, since zod reads such a field from the prototype, and is kept.
+`test/zod-safe-parse.test.js` does the same on generated schemas and through
+real builds.
+
+Measured on a six-field signup form read as above (esbuild, minified,
+gzipped, zod 4.6.7): 93,079 B as written, 3,329 B through the plugin. The
+example above comes to 3,048 B with esbuild, 3,370 B with Vite, 3,047 B with
+webpack and 3,109 B with Rspack, each without zod in the bundle.
+
+In a Next.js 16.4.6 application with two client pages, one with that schema
+and one that imports its schema from `lib/` and reads
+`error.flatten().fieldErrors`, the chunk that held zod (30,489 B under
+Turbopack, 24,430 B under webpack) is gone, and all the client JavaScript of
+the build together goes from 205,915 B to 180,859 B gzipped under Turbopack
+and from 309,323 B to 290,142 B under webpack. The pages were built, not
+driven in a browser.
+
+It costs build time: each schema is built with the application's zod and held
+to it on a few hundred documents. On 200 files of one six-field schema each,
+an esbuild build took 82 ms with `zodSafeParse: false` and about 1.4 s with
+it, 7 ms a schema. A file whose `safeParse` is not zod's costs the parse it
+would otherwise have been spared, 0.2 ms a file on 200 files.
+`zodSafeParse: false` turns the rewrite off.
 
 ### rjsf: `<Form schema={schema} validator={validator} />`
 

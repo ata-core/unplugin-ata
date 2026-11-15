@@ -23,14 +23,14 @@ function sources (root) {
       if (!e.isFile() || !SOURCE.test(e.name)) continue
       let code
       try { if (fs.statSync(p).size > 1 << 20) continue; code = fs.readFileSync(p, 'utf8') } catch { continue }
-      if (code.includes('@hookform/resolvers/zod') || code.includes('ata-validator')) out.push([p, code])
+      if (code.includes('@hookform/resolvers/zod') || code.includes('ata-validator') || code.includes('.safeParse(')) out.push([p, code])
     }
   }
   walk(root, 0)
   return out
 }
 
-// { files, zod: { compiled, kept: [{ file, line, reason }] }, validators: { compiled, kept }, failed: [{ file, error }] }
+// { files, zod: { compiled, kept: [{ file, line, reason }] }, parse: { compiled, kept }, validators: { compiled, kept }, failed: [{ file, error }] }
 export async function scanProject (root, options = {}) {
   root = path.resolve(root)
   const lines = []
@@ -44,10 +44,12 @@ export async function scanProject (root, options = {}) {
     try { await hooks.transform.call({}, code, file) } catch (e) { failed.push({ file: path.relative(root, file), error: String(e && e.message).split('\n')[0] }) }
   }
   await hooks.buildEnd.call({})
-  const out = { files: files.length, zod: { compiled: 0, kept: [] }, validators: { compiled: 0, kept: [] }, failed }
+  const out = { files: files.length, zod: { compiled: 0, kept: [] }, parse: { compiled: 0, kept: [] }, validators: { compiled: 0, kept: [] }, failed }
   for (const [, m] of lines) {
     let x
     if ((x = /zodResolver: (\d+) of \d+ calls? compiled/.exec(m))) out.zod.compiled = Number(x[1])
+    else if ((x = /safeParse: (\d+) of \d+ zod schemas? compiled/.exec(m))) out.parse.compiled = Number(x[1])
+    else if ((x = /^\[unplugin-ata\] left as written: (.*?):(\d+|\?) ([\w$]+\.safeParse\(\): .*)$/.exec(m))) out.parse.kept.push({ file: x[1], line: x[2], reason: x[3] })
     else if ((x = /compileAway: (\d+) validators? compiled/.exec(m))) out.validators.compiled = Number(x[1])
     else if ((x = /^\[unplugin-ata\] left as written: (.*?):(\d+|\?) (zodResolver\([^)]*\): .*)$/.exec(m))) out.zod.kept.push({ file: x[1], line: x[2], reason: x[3] })
     else if ((x = /^\[unplugin-ata\] kept on the runtime: (.*?):(\d+|\?) (.*)$/.exec(m))) out.validators.kept.push({ file: x[1], line: x[2], reason: x[3] })
@@ -62,6 +64,11 @@ export function render (r) {
     out.push(`zodResolver: ${r.zod.compiled} of ${z} call${z === 1 ? '' : 's'} would be compiled at build time; zod leaves the files where every call is.`)
     for (const k of r.zod.kept) out.push(`  ${k.file}:${k.line}  ${k.reason}`)
   } else out.push('zodResolver: no call found.')
+  const p = r.parse.compiled + r.parse.kept.length
+  if (p) {
+    out.push(`safeParse: ${r.parse.compiled} of ${p} zod schema${p === 1 ? '' : 's'} would be compiled at build time; zod leaves the files where every schema is.`)
+    for (const k of r.parse.kept) out.push(`  ${k.file}:${k.line}  ${k.reason}`)
+  }
   const v = r.validators.compiled + r.validators.kept.length
   if (v) {
     out.push(`new Validator / ataResolver: ${r.validators.compiled} of ${v} would be compiled at build time.`)
