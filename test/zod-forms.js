@@ -52,7 +52,7 @@ export function forms (seed0, count) {
 // to zod here and to a build as a file, with documents made for it: one that
 // passes, and for every field in turn that field missing, undefined, null and
 // holding a value of each wrong type.
-const WRONG = [null, undefined, '', 'a', 'abc', ' ab ', 'a@b.co', '3', 0, 1, 0.5, 7, -2, NaN, true, false, [], ['a'], [null], {}, { a: 1 }, new Date(0)]
+const WRONG = [null, undefined, '', 'a', 'abc', ' ab ', 'a@b.co', '3', 0, 1, 0.5, 7, -2, NaN, Infinity, true, false, [], ['a'], [null], {}, { a: 1 }, new Date(0)]
 export function kindForms (seed0, count) {
   let seed = seed0
   const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >>> 8) / 0x7fffff }

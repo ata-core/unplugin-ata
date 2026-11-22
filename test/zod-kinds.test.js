@@ -249,8 +249,13 @@ describe('zod kinds compiled away: a build', () => {
     assert.match(nulls, /v === null\) return v/); assert.doesNotMatch(nulls, /__ataZMissing|"d" in |__ataZPrep = /)
     const filled = (await build(page("z.string().default('x')"))).text
     assert.match(filled, /"d" in /); assert.doesNotMatch(filled, /__ataZMissing|v === null\) return v/)
+    // zod 4.6.7 reports the key of an unknown() where it is absent; 4.2.1
+    // and 4.3.6 do not, and a build on those writes no part for it.
     const any = (await build(page('z.unknown()'))).text
-    assert.match(any, /__ataZMissing/); assert.doesNotMatch(any, /"d" in |v === null\) return v/)
+    const needsKey = !z.object({ a: z.unknown() }).safeParse({}).success
+    assert.doesNotMatch(any, HAS_ZOD)
+    if (needsKey) assert.match(any, /__ataZMissing/); else assert.doesNotMatch(any, /__ataZMissing/)
+    assert.doesNotMatch(any, /"d" in |v === null\) return v/)
     assert.ok(nulls.length - plain.length < 200 && plain.length < nulls.length, `${plain.length} ${nulls.length}`)
   })
   it('keeps zod for a default the field would not pass, a check after nullable(), and catch(), and says why', async () => {
