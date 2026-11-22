@@ -45,3 +45,69 @@ export function forms (seed0, count) {
   for (let i = 0; i < count; i++) { const schema = obj(0); out.push({ schema, docs: Array.from({ length: 24 }, (_, j) => j === 0 ? {} : doc(schema, j < 6 ? 0 : 0.35)) }) }
   return out
 }
+
+// Forms for the kinds around a field: nullable(), nullish(), optional() and
+// default() in every order, on strings, numbers, booleans, enums, arrays and
+// nested objects. Each is written as source, so the same form can be handed
+// to zod here and to a build as a file, with documents made for it: one that
+// passes, and for every field in turn that field missing, undefined, null and
+// holding a value of each wrong type.
+const WRONG = [null, undefined, '', 'a', 'abc', ' ab ', 'a@b.co', '3', 0, 1, 0.5, 7, -2, NaN, true, false, [], ['a'], [null], {}, { a: 1 }, new Date(0)]
+export function kindForms (seed0, count) {
+  let seed = seed0
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >>> 8) / 0x7fffff }
+  const int = (n) => Math.floor(rnd() * n); const pick = (a) => a[int(a.length)]; const maybe = (p) => rnd() < p
+  const msg = () => maybe(0.5) ? '' : pick(["'Required'", "'Bad value.'", "{ message: 'Custom message' }"])
+  const lit = (v) => JSON.stringify(v)
+  const leaves = [
+    () => ({ src: `z.string().min(2${msg() && ', ' + msg()}).max(8)`, ok: ['abc', 'abcd'], d: ['abc', 'toolongtopass', ''] }),
+    () => ({ src: `z.string(${msg()})`, ok: ['', 'x'], d: ['', 'x'] }),
+    () => ({ src: 'z.string().trim().min(1)', ok: [' ab ', 'x'], d: ['x', ' ab '] }),
+    () => ({ src: `z.email(${msg()})`, ok: ['a@b.co'], d: ['a@b.co', 'no'] }),
+    () => ({ src: `z.string().regex(/^[a-z]+$/${msg() && ', ' + msg()})`, ok: ['abc'], d: ['abc'] }),
+    () => ({ src: `z.number().int(${msg()}).min(1)`, ok: [1, 18], d: [5, 0] }),
+    () => ({ src: `z.number(${msg()}).max(100)`, ok: [0.5, 3], d: [0, 0.5] }),
+    () => ({ src: 'z.coerce.number().min(1)', ok: ['3', 4], d: [2] }),
+    () => ({ src: 'z.boolean()', ok: [true, false], d: [false, true] }),
+    () => ({ src: `z.enum(['a', 'b', 'c']${msg() && ', ' + msg()})`, ok: ['a', 'b'], d: ['a', 'z'] }),
+    () => ({ src: `z.literal(${pick(["'x'", '7', 'true'])})`, ok: null, d: [] }),
+    () => ({ src: "z.string().min(2).refine((v) => v !== 'abc', 'Refused')", ok: ['abcd'], d: ['abcd'] }),
+    () => ({ src: 'z.any()', ok: ['x', { a: 1 }], d: ['x', 0] }),
+    () => ({ src: 'z.unknown()', ok: [7, ['a']], d: [7, null] }),
+  ]
+  const leaf = () => { const l = pick(leaves)(); if (l.ok === null) { const v = new Function('return ' + /\((.*)\)$/.exec(l.src)[1])(); l.ok = [v]; l.d = [v] } return l }
+  const arr = (depth) => { const el = depth < 2 && maybe(0.3) ? obj(depth + 1) : wrap(leaf(), true); const lo = int(2); return { src: `z.array(${el.src})${maybe(0.5) ? `.min(${lo})` : ''}${maybe(0.3) ? `.max(${lo + 2})` : ''}`, item: el, ok: [[sample(el), sample(el)].slice(0, lo + 1)], d: [[], [sample(el)]] } }
+  // The wrappers, in the orders people write them.
+  const WRAPS = ['', '', '.nullable()', '.nullable()', '.nullable()', '.nullish()', '.nullish()', '.optional()', '.optional().nullable()', '.nullable().optional()', '.default(D)', '.default(D)', '.default(D).optional()', '.optional().default(D)', '.nullable().default(D)', '.nullable().default(null)', '.default(D).nullable()', '.nullish().default(D)']
+  const wrap = (f, item) => {
+    let w = item ? pick(['', '', '.nullable()', '.nullable()']) : pick(WRAPS)
+    // An object's default is rarely one it passes: most of those are refused.
+    if (f.kids && w.includes('default') && maybe(0.7)) w = pick(['.nullable()', '.nullish()'])
+    if (!w) return f
+    return { ...f, src: f.src + w.replace('D', () => lit(maybe(0.9) ? f.d[0] : pick(f.d))), wrapped: w }
+  }
+  const obj = (depth) => {
+    const kids = {}; const n = 1 + int(4)
+    for (let i = 0; i < n; i++) kids[pick(['a', 'b', 'name', 'x/y', 'k~1']) + i] = wrap(depth < 2 && maybe(0.2) ? obj(depth + 1) : maybe(0.2) ? arr(depth) : leaf(), false)
+    let src = `${maybe(0.25) ? 'z.strictObject' : 'z.object'}({ ${Object.entries(kids).map(([k, f]) => `${lit(k)}: ${f.src}`).join(', ')} })`
+    if (maybe(0.2)) src += `.refine((v) => Object.keys(v).length !== 2${maybe(0.5) ? ", 'Not two'" : ''})`
+    const f = { src, kids }
+    f.ok = [sample(f)]; f.d = [{}, sample(f)]
+    return f
+  }
+  function sample (f) { if (!f.kids) return f.ok[0]; const o = {}; for (const [k, c] of Object.entries(f.kids)) o[k] = sample(c); return o }
+  const places = (f, at, out) => { if (f.kids) for (const [k, c] of Object.entries(f.kids)) { out.push(at.concat(k)); places(c, at.concat(k), out) } else if (f.item && f.ok[0].length) { out.push(at.concat(0)); places(f.item, at.concat(0), out) } return out }
+  const set = (d, ip, v, drop) => { const o = clone(d); let at = o; for (let i = 0; i < ip.length - 1; i++) at = at[ip[i]]; if (drop) { if (Array.isArray(at)) at.length = 0; else delete at[ip[ip.length - 1]] } else at[ip[ip.length - 1]] = v; return o }
+  const out = []
+  for (let i = 0; i < count; i++) {
+    const f = obj(0)
+    const base = sample(f)
+    const at = places(f, [], [])
+    const docs = [base, {}]
+    for (const ip of at) { docs.push(set(base, ip, undefined, true)); for (const v of WRONG) docs.push(set(base, ip, v, false)) }
+    // Several places wrong at once.
+    for (let j = 0; j < 12 && at.length > 1; j++) { let d = base; for (const ip of at) if (maybe(0.3)) { try { d = set(d, ip, pick(WRONG), maybe(0.3)) } catch { /* its parent is no longer an object */ } } docs.push(d) }
+    out.push({ src: f.src, schema: new Function('z', `return ${f.src}`)(z), docs })
+  }
+  return out
+}

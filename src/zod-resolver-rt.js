@@ -22,6 +22,9 @@ const __ataZKey = (P, ip) => { const key = []; let pat = ''; if (ip) for (const 
 // an array item by item.
 const __ataZStrip = (P, pat, v) => {
   const n = P[pat]
+//<nulls>
+  if (v === null) return v
+//</nulls>
   if (n.a) return Array.isArray(v) ? Array.from(v, (x) => __ataZStrip(P, pat + '/*', x)) : v
   if (!n.k) return n.x && typeof v === 'string' ? __ataZOps(n.x, v) : v
   const out = {}
@@ -37,6 +40,14 @@ const __ataZOps = (ops, v) => { for (const op of ops) v = op === 0 ? v.trim() : 
 // what the check then reads.
 const __ataZPrep = (P, pat, v) => {
   const n = P[pat]
+//<nulls>
+  if (v === null && n.n) return v
+//</nulls>
+//<defaults>
+  // A default stands in for a value that is not there, as zod writes it: a
+  // copy one level deep, and none of the field's rewrites.
+  if (v === undefined && 'd' in n) return Array.isArray(n.d) ? n.d.slice() : n.d && typeof n.d === 'object' ? Object.assign({}, n.d) : n.d
+//</defaults>
   if (n.a) return Array.isArray(v) ? Array.from(v, (x) => __ataZPrep(P, pat + '/*', x)) : v
   // A coercion (3) takes whatever came, except nothing where nothing is allowed.
   if (!n.k) return n.w && (n.w[0] === 3 ? !(n.q && v === undefined) : typeof v === 'string') ? __ataZOps(n.w, v) : v
@@ -47,6 +58,9 @@ const __ataZPrep = (P, pat, v) => {
   const out = {}
   for (const key in v) if (key !== '__proto__') out[key] = v[key]
   for (const key of n.k) if (key in v) out[key] = __ataZPrep(P, pat + '/' + __ataZEsc(key), v[key])
+//<defaults>
+  for (const key of n.k) if (!(key in v) && 'd' in P[pat + '/' + __ataZEsc(key)]) out[key] = __ataZPrep(P, pat + '/' + __ataZEsc(key))
+//</defaults>
   return out
 }
 //</rewrites>
@@ -75,6 +89,9 @@ const __ataZRefine = (issues, P, R, F, doc) => {
   for (const r of R) for (const ip of places(r[0])) {
     const v = __ataZAt(doc, ip)
     if (v === undefined) continue
+//<nulls>
+    if (v === null && P[r[0]].n) continue
+//</nulls>
     if (issues.some((i) => (i[5] === 1 || i[7]) && (i[6] === ip ? i[1] < r[1] : i[6].startsWith(ip + '/') || ip.startsWith(i[6] + '/')))) continue
     // zod hands a refine what it has parsed so far: an object or an array as
     // it would be handed back, unknown keys gone.
@@ -107,6 +124,17 @@ const __ataZStrict = (issues, P, pat, ip, v) => {
   for (const key of n.k) if (key in v) { const e = '/' + __ataZEsc(key); __ataZStrict(issues, P, pat + e, ip + e, v[key]) }
 }
 //</strict>
+//<missing>
+// A field that takes anything (any, unknown) still has to be there: zod
+// reports its key where it is absent and takes it where it holds undefined,
+// which the check cannot tell apart. Read as the strict keys are.
+const __ataZMissing = (issues, P, pat, ip, v) => {
+  const n = P[pat]
+  if (n.a) { if (Array.isArray(v)) for (let i = 0; i < v.length; i++) __ataZMissing(issues, P, pat + '/*', ip + '/' + i, v[i]); return }
+  if (!n.k || v === null || typeof v !== 'object' || Array.isArray(v)) return
+  for (const key of n.k) { const at = ip + '/' + __ataZEsc(key); const c = P[__ataZPat(P, at)]; if (key in v) __ataZMissing(issues, P, __ataZPat(P, at), at, v[key]); else if (c.m) issues.push([__ataZKey(P, at), -1, at, c.m[0], c.m[1], 1, at]) }
+}
+//</missing>
 // zod's issues for a rejected document, in zod's order: [instancePath, code, message].
 const __ataZIssues = (errors, T, P, values, R, F) => {
   let issues = []; const capped = []
@@ -132,6 +160,9 @@ const __ataZIssues = (errors, T, P, values, R, F) => {
 //<strict>
   if (P[''].z) __ataZStrict(issues, P, '', '', __ataZGiven)
 //</strict>
+//<missing>
+  if (P[''].y) __ataZMissing(issues, P, '', '', values)
+//</missing>
   // zod does not read the items of an oversized array: what the check
   // found under one is not something zod would have said.
   if (capped.length) issues = issues.filter((i) => !capped.some((c) => i[6].startsWith(c)))
@@ -153,6 +184,10 @@ const __ataZRun = (validate, T, P, values, R, F) => {
   // not name.
   if (P[''].z) { __ataZGiven = values; const found = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F); __ataZGiven = undefined; return found.length ? { issues: found } : { data: __ataZStrip(P, '', doc) } }
 //</strict>
+//<missing>
+  // A document the check passed can still lack the key of such a field.
+  if (P[''].y) { const found = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F); return found.length ? { issues: found } : { data: __ataZStrip(P, '', doc) } }
+//</missing>
   if (r.valid && !R) return { data: __ataZStrip(P, '', doc) }
   const issues = __ataZIssues(r.valid ? [] : r.errors, T, P, doc, R, F)
   return issues.length ? { issues } : { data: __ataZStrip(P, '', doc) }

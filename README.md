@@ -461,15 +461,23 @@ written before the checks or after them), numbers (`int`, written as a check or
 as the schema itself, `z.int()`;
 `min`, `max`, `gt`, `lt`, `positive`, and `z.coerce.number()`), booleans, enums, literals, optional
 fields, nested objects and arrays of any of these (`min`, `max`, `length`,
-`nonempty`), and `refine` on any of them where its function reads nothing
+`nonempty`), `nullable()`, `nullish()` and `optional()` around any of them in
+any order, `default(value)` where the value is text, a number, a boolean,
+null, or a list or an object of those and the field itself passes it
+unchanged (the page fills it in for a missing key and for one that holds
+undefined, as zod does), `z.any()` and `z.unknown()` (zod reports their key
+where it is absent and takes it where it holds undefined, and so does the
+page), and `refine` on any of them where its function reads nothing
 but its own argument (`(v) => v.password === v.confirm`, with its message,
 `path` and `abort`), and strict objects (`z.strictObject`, `.strict()`), whose
 unknown keys are named in one issue as zod names them, with zod 4. A refine's
 function goes into the page as it is written. Not carried, so the call stays as
-written and zod stays on that page: unions, `nullable`, `url()` with
+written and zod stays on that page: unions, a check written after
+`nullable()` or `default()`, a default the field would refuse or rewrite, a
+default inside an array's items, `catch`, `prefault`, `url()` with
 `hostname`, `protocol` or `normalize` or with a check after it,
 a `refine` that reads a value from outside, an async one, `superRefine`,
-`transform`, `default`, `coerce` on anything but a number, a
+`transform`, `coerce` on anything but a number, a
 rewrite such as `trim` between two checks, loose and catchall objects
 (`z.looseObject`, `.passthrough()`, `.catchall()`), a strict object whose
 message is a function of the keys, number formats other than `int`, a schema

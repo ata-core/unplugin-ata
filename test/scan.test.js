@@ -57,15 +57,15 @@ export const e = zodResolver(loginSchema, undefined, { raw: true })
   it('lists the zod schemas whose safeParse would be compiled, and why the rest would not', async () => {
     const own = await fs.mkdtemp(path.join(here, 'fixtures', 'scan-parse-'))
     try {
-      await fs.writeFile(path.join(own, 'a.ts'), "import { z } from 'zod'\nconst good = z.strictObject({ email: z.email() })\nconst sent = z.object({ a: z.string() })\nconst wide = z.object({ a: z.string().nullable() })\nexport const f = (d: unknown) => good.safeParse(d).success\nexport const g = (d: unknown) => sent.safeParse(d)\nexport const h = (d: unknown) => wide.safeParse(d).success\n")
+      await fs.writeFile(path.join(own, 'a.ts'), "import { z } from 'zod'\nconst good = z.strictObject({ email: z.email() })\nconst sent = z.object({ a: z.string() })\nconst wide = z.object({ a: z.union([z.string(), z.number()]) })\nexport const f = (d: unknown) => good.safeParse(d).success\nexport const g = (d: unknown) => sent.safeParse(d)\nexport const h = (d: unknown) => wide.safeParse(d).success\n")
       const r = await scanProject(own)
       assert.equal(r.parse.compiled, 1)
       assert.equal(r.parse.kept.length, 2)
       assert.ok(r.parse.kept.some((k) => k.file === 'a.ts' && k.line === '6' && /^sent\.safeParse\(\): what it returns is used in a way the build does not follow/.test(k.reason)), JSON.stringify(r.parse.kept))
-      assert.ok(r.parse.kept.some((k) => k.line === '7' && /^wide\.safeParse\(\): a: nullable\(\) is not carried yet/.test(k.reason)), JSON.stringify(r.parse.kept))
+      assert.ok(r.parse.kept.some((k) => k.line === '7' && /^wide\.safeParse\(\): a: a union is not carried yet/.test(k.reason)), JSON.stringify(r.parse.kept))
       const text = render(r)
       assert.match(text, /safeParse: 1 of 3 zod schemas would be compiled at build time/)
-      assert.match(text, / {2}a\.ts:7 {2}wide\.safeParse\(\): a: nullable/)
+      assert.match(text, / {2}a\.ts:7 {2}wide\.safeParse\(\): a: a union/)
     } finally { await fs.rm(own, { recursive: true, force: true }) }
   })
   it('writes nothing', async () => {

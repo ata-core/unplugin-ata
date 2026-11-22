@@ -254,7 +254,7 @@ export const e = (d: unknown) => schema.safeParse(d).error?.issues.map((i) => i.
   it('leaves zod where the schema is not carried, is exported, or the application sets zod\'s messages', async () => {
     const READ1 = `export const f = (d: unknown) => schema.safeParse(d).success`
     for (const [src, others, why] of [
-      [`import { z } from 'zod'\nconst schema = z.object({ a: z.string().nullable() })\n${READ1}\n`, {}, /nullable\(\) is not carried yet/],
+      [`import { z } from 'zod'\nconst schema = z.object({ a: z.union([z.string(), z.number()]) })\n${READ1}\n`, {}, /a union is not carried yet/],
       [`import { z } from 'zod'\nconst schema = z.string().min(2)\n${READ1}\n`, {}, /the schema is not an object/],
       [`import { z } from 'zod'\nexport const schema = z.object({ a: z.string() })\n${READ1}\n`, {}, /is exported/],
       [`import { z } from 'zod'\nconst schema = z.object({ l: z.array(z.string()) }).refine(() => true, { path: ['l', 0] })\n${READ1}\n`, {}, /a refine whose path names an index/],

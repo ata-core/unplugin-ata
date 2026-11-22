@@ -1103,6 +1103,9 @@ export function compileAway(code, id, ata, options) {
   let zodRewrites = false
   let zodRefines = false
   let zodStrict = false
+  // The kinds of field only some plans have (a nullable one, a default):
+  // the run-time text carries their lines only for a file that has one.
+  const zodKinds = {}
   // Schemas whose safeParse the build answers, and the constants that stand
   // for them in the file, written after the compiled modules.
   let parseDone = 0
@@ -1252,6 +1255,7 @@ export function compileAway(code, id, ata, options) {
         if (f.plan.rewrites) zodRewrites = true
         if (f.plan.refines) zodRefines = true
         if (f.plan.strict) zodStrict = true
+        Object.assign(zodKinds, f.plan.kinds)
         if (f.parse) {
           // The schema becomes a constant that answers safeParse, and each
           // use names it; a schema nothing calls any more leaves the bundle.
@@ -1516,7 +1520,7 @@ export function compileAway(code, id, ata, options) {
   // bundle.
   for (const call of ctx.tCalls) s.appendLeft(call.start, '/*#__PURE__*/ ')
   if (resolverCalls.size) addImport(resolverKind === 'own' ? OWN_RESOLVER : `import { ataCompiledResolver as __ataCompiledResolver } from '${RESOLVERS}';\n`)
-  if (zodDone || parseDone) addImport((zodDone ? ZOD_RUNTIME_IMPORTS : '') + zodRuntimeFor(zodRewrites, zodRefines, zodStrict, zodDone > 0, parseDone > 0, zodFlat))
+  if (zodDone || parseDone) addImport((zodDone ? ZOD_RUNTIME_IMPORTS : '') + zodRuntimeFor(zodRewrites, zodRefines, zodStrict, zodDone > 0, parseDone > 0, zodFlat, zodKinds))
   if (wrappers.verdict) addImport(`import { fromCompiledVerdict as __ataFromCompiledVerdict } from 'ata-validator/compiled-verdict';\n`)
   if (wrappers.full) addImport(`import { fromCompiled as __ataFromCompiled } from 'ata-validator/compiled';\n`)
   if (wrappers.object) addImport(`import { fromCompiledObject as __ataFromCompiledObject } from 'ata-validator/compiled-object';\n`)

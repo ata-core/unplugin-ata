@@ -20,9 +20,12 @@
 // toLowerCase and toUpperCase before the checks or after them), numbers (int, min, max, gt, lt,
 // positive and the like), booleans, enums, literals, optional fields and
 // nested objects, arrays of these, and refine where its function reads only
-// its argument, and strict objects. Refused: unions, nullable, a refine that
-// reads more, transform, default, coerce on anything but a number, a rewrite
-// between two checks, loose and catchall objects, zod 3.
+// its argument, and strict objects; nullable(), nullish() and optional()
+// around any of them in any order, default() with a constant the field
+// itself passes, any() and unknown(). Refused: unions, a refine that
+// reads more, transform, catch, a default the field would refuse, coerce on
+// anything but a number, a rewrite between two checks, loose and catchall
+// objects, zod 3.
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { closesOver } from './zod.js'
@@ -31,6 +34,11 @@ export const ZOD_RESOLVERS = '@hookform/resolvers/zod'
 const RT_TEXT = fs.readFileSync(new URL('./zod-resolver-rt.js', import.meta.url), 'utf8')
 const bare = (text) => text.replace(/^\/\/[^\n]*\n/gm, '')
 export const ZOD_RUNTIME = bare(RT_TEXT)
+// A value a default can be on the page: text, a number, a boolean, null, or
+// an array or a plain object of those (one level, which is as deep as zod
+// copies a default before it hands it back).
+const flatValue = (v) => v === null || typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))
+const constant = (v) => flatValue(v) || (Array.isArray(v) ? v.every(flatValue) : typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype && Object.keys(v).every((k) => k !== '__proto__' && flatValue(v[k])))
 // Without the part that rewrites strings, for a file none of whose forms has
 // a trim or a case rewrite: the rest only reaches it through a plan that
 // says so (plan.rewrites).
@@ -38,7 +46,10 @@ const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*
 // The run-time text for a file: the part that rewrites strings and the part
 // that runs refine functions only where a plan of the file needs them. The
 // rest reaches them only through a plan that says so.
-export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
+// `kinds`: the parts only a plan with that kind of field reaches, { nulls,
+// defaults, missing }: a nullable field, a default, a field of any() or
+// unknown() whose key has to be there.
+export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false, kinds = {}) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat], ['nulls', !!kinds.nulls], ['defaults', !!kinds.defaults], ['missing', !!kinds.missing]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
 export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
@@ -77,6 +88,7 @@ export function planZod (schema) {
   const paths = {}      // instancePath -> { o: order, u: [code, message] when undefined }
   let order = 0
   let rewrites = false
+  const kinds = {}
   // refine(): [pattern, rank, function, message, path, stops], in the order
   // zod runs them (a node's children before the node), and the functions.
   const refines = []; const fns = []
@@ -122,12 +134,44 @@ export function planZod (schema) {
   const nodes = new Map(); const node0 = (ip) => nodes.get(ip)
   const walkNode = (node, sp, ip) => {
     let def = node._zod.def
-    let optional = false
-    if (def.type === 'optional') { if ((def.checks || []).length) no('a check written after optional() is not carried'); optional = true; node = def.innerType; def = node._zod.def }
+    // optional(), nullable() and default() around a field, in any order
+    // (nullish() is the first two). What the whole takes for a missing value
+    // and for null is asked of zod itself, on the field as it is written.
+    const outer = node
+    let optional = false; let nullable = false; let defaulted = false
+    while (def.type === 'optional' || def.type === 'nullable' || def.type === 'default') {
+      if ((def.checks || []).length) no(`a check written after ${def.type}() is not carried`)
+      if (def.type === 'optional') optional = true
+      else if (def.type === 'nullable') nullable = true
+      else { if (defaulted) no('a default written on a default is not carried'); defaulted = true }
+      node = def.innerType; def = node._zod.def
+    }
     const here = paths[ip] = { o: order++ }
     nodes.set(ip, node)
-    if (!optional) { const u = issuesOf(node, undefined); if (u.length !== 1) no(u.length === 0 ? 'a field that takes a missing value without being optional (any, unknown, a default) is not carried' : 'zod reports more than one thing for a missing value here'); here.u = [u[0].code, u[0].message] }
-    else here.q = 1
+    const missing = outer.safeParse(undefined)
+    if (!missing.success) {
+      if (optional || defaulted) no('zod refuses a missing value for a field written optional or with a default')
+      const u = missing.error.issues; if (u.length !== 1) no('zod reports more than one thing for a missing value here'); here.u = [u[0].code, u[0].message]
+    } else if (missing.data !== undefined) {
+      // A default: what zod hands back for a missing value, without checking
+      // it. The page writes it in before its check, so it has to be a value
+      // the field itself passes unchanged, and one that can be written down.
+      const d = missing.data
+      if (!defaulted) no('a field that takes a missing value without being optional (any, unknown, a default) is not carried')
+      if (!constant(d) || show(outer.safeParse(undefined).data) !== show(d)) no('a default that is not text, a number, a boolean, null, or a list or an object of those is not carried')
+      const back = outer.safeParse(d)
+      if (!back.success || show(back.data) !== show(d)) no('a default the field itself would refuse or rewrite is not carried')
+      here.d = d; paths[''].p = 1; rewrites = true; kinds.defaults = true
+    } else if (optional) here.q = 1
+    // any() and unknown() take undefined; whether the key may also be absent
+    // is asked of zod by the object that holds the field.
+    else if (def.type === 'any' || def.type === 'unknown') { here.q = 1; here.y = 1 }
+    else no('a field that takes a missing value without being optional (any, unknown, a default) is not carried')
+    if (nullable) {
+      const n = outer.safeParse(null)
+      if (!n.success || n.data !== null) no('zod does not take null for a field written nullable')
+      here.n = 1; kinds.nulls = true
+    }
     const out = {}
     const dup = new Set()
     const put = (kw, value, entry) => {
@@ -218,6 +262,10 @@ export function planZod (schema) {
       if (checks.length) no('a check on a boolean')
       if (def.coerce) no('coerce on a boolean is not carried')
       out.type = 'boolean'; table[`${sp}/type`] = { t: typeEntry(node, 'boolean', [null, 'a', 1, {}]) }
+    } else if (def.type === 'any' || def.type === 'unknown') {
+      // Anything passes and is handed back as it came: the check says
+      // nothing about the field.
+      if (checks.length) no(`a check on ${def.type}() is not carried`)
     } else if (def.type === 'enum' || def.type === 'literal') {
       if (checks.length) no('a check on an enum')
       const values = def.type === 'enum' ? Object.values(def.entries) : def.values
@@ -248,6 +296,9 @@ export function planZod (schema) {
       })
       if (out.allOf) no('two length checks of one kind on an array')
       out.items = walk(el, `${sp}/items`, `${ip}/*`)
+      const item = paths[`${ip}/*`]
+      if ((item.q && !item.y) || 'd' in item) no('an array of optional items is not carried')
+      delete item.y
       checks.forEach((c, rank) => { if (c._zod.def.check === 'custom') refine(c._zod.def, rank, ip, def) })
     } else if (def.type === 'object') {
       // A strict object (z.strictObject, .strict()): zod names every key it
@@ -269,17 +320,32 @@ export function planZod (schema) {
       for (const k of here.k) {
         if (k === '__proto__') no('a __proto__ key')
         const child = def.shape[k]
-        if (child._zod.def.type !== 'optional') required.push(k)
         out.properties[k] = walk(child, `${sp}/properties/${esc(k)}`, `${ip}/${esc(k)}`)
+        const at = paths[`${ip}/${esc(k)}`]
+        if (!at.q && !('d' in at)) required.push(k)
+        // any() and unknown(): zod reports the key where it is absent, and
+        // takes it where it holds undefined. The page looks for the key.
+        if (at.y) {
+          delete at.y
+          const gone = issuesOf(node, {}).filter((i) => i.path.length === 1 && i.path[0] === k)
+          if (gone.length > 1) no('zod reports more than one thing for a missing value here')
+          if (gone.length) { at.m = [gone[0].code, gone[0].message]; paths[''].y = 1; kinds.missing = true }
+        }
       }
       if (required.length) out.required = required
       checks.forEach((c, rank) => refine(c._zod.def, rank, ip, def))
     } else no(KINDS[def.type] || `${def.type} is not carried`)
+    // null beside what the field takes: a type the check lets through, and
+    // a member of an enum.
+    if (nullable) {
+      if (out.type) out.type = [out.type, 'null']
+      if (out.enum) out.enum = out.enum.concat(null)
+    }
     return out
   }
   if (schema._zod.def.type !== 'object') no(schema._zod.def.type === 'pipe' ? 'the schema is a transform or a pipe, which is not carried' : 'the schema is not an object')
   const json = walk(schema, '#', '')
-  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns, strict: paths[''].z === 1, indexed }
+  return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns, strict: paths[''].z === 1, indexed, kinds }
 }
 
 // Why a plan cannot answer safeParse, where it can answer a resolver: an
@@ -322,7 +388,9 @@ export function selfCheck (schema, plan, validate, parse = false) {
   const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = copyOf(d[k]); return o }
   const good = (node, ip) => {
     let def = node._zod.def; let optional = false
-    if (def.type === 'optional') { optional = true; node = def.innerType; def = node._zod.def }
+    // The sample is one the field itself takes, under optional(), nullable()
+    // and default(): null and a missing value are handed to it further down.
+    while (def.type === 'optional' || def.type === 'nullable' || def.type === 'default') { if (def.type !== 'nullable') optional = true; node = def.innerType; def = node._zod.def }
     if (def.type === 'object') { objects.push(ip); const out = {}; for (const [k, child] of Object.entries(def.shape)) out[k] = good(child, ip.concat(k)); return out }
     if (def.type === 'array') {
       // Two items where the bounds allow, the first of them varied below.
@@ -365,10 +433,11 @@ export function selfCheck (schema, plan, validate, parse = false) {
     for (const k of new Set([0, 1, Math.max(0, min - 1), min, n + 1, max === undefined ? 5 : max + 1, max === undefined ? 5 : max])) if (k <= 200) docs.push(set(base, ip, of(k), false))
     if (n > 0) { const holed = of(n); holed[0] = undefined; docs.push(set(base, ip, holed, false)) }
     for (const v of POOL) docs.push(set(base, ip, v, false))
+    docs.push(set(base, ip, undefined, true))
   }
   // Parents of leaves, wrong as a whole.
   const parents = new Set(leaves.filter((ip) => ip.length > 1).map((ip) => JSON.stringify(ip.slice(0, -1))))
-  for (const p of parents) for (const v of [undefined, null, 'a', 1, [], {}]) docs.push(set(base, JSON.parse(p), v, false))
+  for (const p of parents) { for (const v of [undefined, null, 'a', 1, [], {}]) docs.push(set(base, JSON.parse(p), v, false)); docs.push(set(base, JSON.parse(p), undefined, true)) }
   // Keys the schema does not name, in every object: one, two, one that
   // holds undefined, one that is inherited, and one beside a field that is
   // wrong or missing. A strict object names them; any other drops them.
