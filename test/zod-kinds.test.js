@@ -160,6 +160,23 @@ describe('zod kinds compiled away: the plan against zod', () => {
       }
     }
   })
+  it('words a number that is not finite as the application\'s zod does', () => {
+    // 4.2.1 and 4.3.6 say `received number` for Infinity, 4.6.7 `received
+    // Infinity`. The plan asks the schema, and the page's text follows.
+    const schema = z.object({ a: z.string(), n: z.number().nullable() })
+    const plan = planZod(schema)
+    const named = schema.safeParse(Infinity).error.issues[0].message === 'Invalid input: expected object, received Infinity'
+    assert.equal(!!plan.kinds.number, !named)
+    const now = zodRuntimeFor(false, false, false, true, true, false); const earlier = zodRuntimeFor(false, false, false, true, true, false, { number: true })
+    assert.match(now, /Number\.isFinite\(v\) \? 'number' : String\(v\)/)
+    assert.equal(earlier, now.replace("Number.isFinite(v) ? 'number' : String(v)", "'number'"))
+    assert.ok(earlier.length < now.length)
+    // The earlier wording, run: what the page would say under such a zod.
+    const v = new ata.Validator(plan.json, { richErrors: false })
+    const old = zodRuntime(null, null, null, { number: true }).schema({ validate: (d) => v.validate(d) }, plan.table, plan.paths, plan.refines, plan.fns)
+    assert.deepEqual(old.safeParse({ a: Infinity, n: -Infinity }).error.issues.map((i) => i.message), ['Invalid input: expected string, received number', 'Invalid input: expected number, received number'])
+    assert.deepEqual(old.safeParse({ a: NaN, n: null }).error.issues.map((i) => i.message), ['Invalid input: expected string, received NaN'])
+  })
   it('writes the lines of a kind only into a file that has it', () => {
     const base = zodRuntimeFor(true, true, true, true, true, true)
     assert.equal(zodRuntimeFor(true, true, true, true, true, true, {}), base)

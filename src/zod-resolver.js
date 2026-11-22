@@ -49,14 +49,20 @@ const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*
 // `kinds`: the parts only a plan with that kind of field reaches, { nulls,
 // defaults, missing, loose }: a nullable field, a default, a field of any()
 // or unknown() whose key has to be there, a loose object.
-export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false, kinds = {}) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat], ['nulls', !!kinds.nulls], ['defaults', !!kinds.defaults], ['missing', !!kinds.missing], ['loose', !!kinds.loose]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
+// zod 4.2.1 and 4.3.6 say `received number` for Infinity, where 4.6.7 names
+// it: `kinds.number` writes the earlier wording, learned from the
+// application's own zod like every other message.
+const NAMED = "Number.isFinite(v) ? 'number' : String(v)"
+const earlier = (text, on) => on ? text.replace(NAMED, () => "'number'") : text
+export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false, kinds = {}) => earlier(bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat], ['nulls', !!kinds.nulls], ['defaults', !!kinds.defaults], ['missing', !!kinds.missing], ['loose', !!kinds.loose]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT)), !!kinds.number)
 export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
 // and the returned data, and a test builds the whole resolver from it with
 // the real toNestErrors, validateFieldsNatively and appendErrors.
-export const zodRuntime = (nest, native, append) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', ZOD_RUNTIME + '\nreturn { run: __ataZRun, resolver: __ataZodResolver, schema: __ataZSchema, flat: __ataZFlat }')(nest, native, append)
+export const zodRuntime = (nest, native, append, kinds = {}) => new Function('__ataZNest', '__ataZNative', '__ataZAppend', earlier(ZOD_RUNTIME, !!kinds.number) + '\nreturn { run: __ataZRun, resolver: __ataZodResolver, schema: __ataZSchema, flat: __ataZFlat }')(nest, native, append)
 const RT = zodRuntime(null, null, null)
+const RT_EARLIER = zodRuntime(null, null, null, { number: true })
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER
 // What a refusal says for the kinds of schema that are not carried.
@@ -348,6 +354,8 @@ export function planZod (schema) {
     return out
   }
   if (schema._zod.def.type !== 'object') no(schema._zod.def.type === 'pipe' ? 'the schema is a transform or a pipe, which is not carried' : 'the schema is not an object')
+  // How this zod words a number that is not finite, asked of the schema.
+  if (issuesOf(schema, Infinity).some((i) => i.code === 'invalid_type' && /^Invalid input: expected \w+, received number$/.test(i.message))) kinds.number = true
   const json = walk(schema, '#', '')
   return { json, table, paths, rewrites, refines: refines.length ? refines : null, fns, strict: paths[''].z === 1, indexed, kinds }
 }
@@ -390,6 +398,7 @@ const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefin
 // the pool, and on documents with several fields wrong. `validate` is the
 // check compiled from plan.json with plain errors.
 export function selfCheck (schema, plan, validate, parse = false) {
+  const rt = plan.kinds && plan.kinds.number ? RT_EARLIER : RT
   const leaves = []; const arrays = []; const objects = []
   const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) { if (k === '__proto__') Object.defineProperty(o, k, { value: copyOf(d[k]), enumerable: true, writable: true, configurable: true }); else o[k] = copyOf(d[k]) } return o }
   const good = (node, ip) => {
@@ -467,7 +476,7 @@ export function selfCheck (schema, plan, validate, parse = false) {
   // The answer of safeParse itself: success, the data, and each issue's
   // code, path and message, the path as zod gives it (a number for an index).
   if (parse) {
-    const mine = RT.schema({ validate }, plan.table, plan.paths, plan.refines, plan.fns)
+    const mine = rt.schema({ validate }, plan.table, plan.paths, plan.refines, plan.fns)
     for (const d of docs) {
       const want = schema.safeParse(copy(d)); const got = mine.safeParse(copy(d))
       if (want.success !== got.success) return `verdict on ${show(d)}`
@@ -479,7 +488,7 @@ export function selfCheck (schema, plan, validate, parse = false) {
   }
   for (const d of docs) {
     const want = schema.safeParse(copy(d))
-    const got = RT.run(validate, plan.table, plan.paths, copy(d), plan.refines, plan.fns)
+    const got = rt.run(validate, plan.table, plan.paths, copy(d), plan.refines, plan.fns)
     if (want.success !== (got.issues === undefined)) return `verdict on ${show(d)}`
     if (want.success) { if (show(want.data) !== show(got.data)) return `data on ${show(d)}`; continue }
     const mine = got.issues
