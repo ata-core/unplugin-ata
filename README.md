@@ -467,7 +467,8 @@ null, or a list or an object of those and the field itself passes it
 unchanged (the page fills it in for a missing key and for one that holds
 undefined, as zod does), `z.any()` and `z.unknown()` (zod reports their key
 where it is absent and takes it where it holds undefined, and so does the
-page), and `refine` on any of them where its function reads nothing
+page), loose objects (`z.looseObject`, `.loose()`, `.passthrough()`), whose
+unknown keys are handed back after the fields as zod hands them back, and `refine` on any of them where its function reads nothing
 but its own argument (`(v) => v.password === v.confirm`, with its message,
 `path` and `abort`), and strict objects (`z.strictObject`, `.strict()`), whose
 unknown keys are named in one issue as zod names them, with zod 4. A refine's
@@ -478,8 +479,8 @@ default inside an array's items, `catch`, `prefault`, `url()` with
 `hostname`, `protocol` or `normalize` or with a check after it,
 a `refine` that reads a value from outside, an async one, `superRefine`,
 `transform`, `coerce` on anything but a number, a
-rewrite such as `trim` between two checks, loose and catchall objects
-(`z.looseObject`, `.passthrough()`, `.catchall()`), a strict object whose
+rewrite such as `trim` between two checks, an object with a catchall of
+its own (`.catchall(z.string())`), a strict object whose
 message is a function of the keys, number formats other than `int`, a schema
 exported from the file of the call or used elsewhere in it as a value, a schema built from anything but zod and constants of the file,
 and a call that passes options. An application that changes zod's messages

@@ -20,7 +20,7 @@ import { z } from 'zod'
 import { other } from './other.js'
 const a = new Validator({ type: 'string' })
 const b = new Validator(other)
-const loose = z.looseObject({ a: z.string() })
+const loose = z.object({ a: z.string() }).catchall(z.string())
 const strict = z.strictObject({ a: z.email(), n: z.int().optional() })
 export const run = (x) => [a.isValidObject(x), b.isValidObject(x)]
 export const r1 = zodResolver(loose)

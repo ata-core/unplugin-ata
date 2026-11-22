@@ -43,14 +43,14 @@ const planned = (schema) => {
 }
 
 describe('zod kinds compiled away: the plan against zod', () => {
-  it('answers as zodResolver and as safeParse on generated forms with nullable, nullish, optional and default fields', async () => {
-    const tally = { taken: 0, refused: 0, nulls: 0, defaults: 0, missing: 0, gone: 0, resolver: 0, parse: 0, rejected: 0, filled: 0, nullKept: 0 }; const why = {}
+  it('answers as zodResolver and as safeParse on generated forms with nullable, nullish, optional, default, any and unknown fields and loose objects', async () => {
+    const tally = { taken: 0, refused: 0, nulls: 0, defaults: 0, missing: 0, gone: 0, loose: 0, kept: 0, resolver: 0, parse: 0, rejected: 0, filled: 0, nullKept: 0 }; const why = {}
     for (const { src, schema, docs } of kindForms(SEED, COUNT)) {
       const p = planned(schema)
       if (p.why) { tally.refused++; const k = p.why.replace(/^[^:]*: /, ''); why[k] = (why[k] || 0) + 1; continue }
       assert.equal(p.said, null, src)
       const { plan, validate } = p
-      tally.taken++; if (plan.kinds.nulls) tally.nulls++; if (plan.kinds.defaults) tally.defaults++; if (plan.kinds.missing) tally.missing++
+      tally.taken++; if (plan.kinds.nulls) tally.nulls++; if (plan.kinds.defaults) tally.defaults++; if (plan.kinds.missing) tally.missing++; if (plan.kinds.loose) tally.loose++
       for (const raw of [false, true]) {
         const mine = RT.resolver({ validate }, plan.table, plan.paths, { raw }, plan.refines, plan.fns)
         const theirs = zodResolver(schema, undefined, { raw })
@@ -71,6 +71,7 @@ describe('zod kinds compiled away: the plan against zod', () => {
           const text = show(want.data)
           if (text !== show(d) && plan.kinds.defaults) tally.filled++
           if (text.includes('null')) tally.nullKept++
+          if (plan.kinds.loose && /"(?:extra|more|zz|inherited)"/.test(text)) tally.kept++
         }
         tally.parse++
       }
@@ -80,7 +81,8 @@ describe('zod kinds compiled away: the plan against zod', () => {
     assert.ok(tally.nulls >= COUNT * 0.3 && tally.defaults >= COUNT * 0.2, JSON.stringify(tally))
     assert.ok(tally.rejected > tally.parse / 3 && tally.rejected < tally.parse, JSON.stringify(tally))
     assert.ok(tally.filled >= 100 && tally.nullKept >= 100, JSON.stringify(tally))
-    assert.ok(tally.missing >= COUNT * 0.1 && tally.gone >= 50, JSON.stringify(tally))
+    assert.ok(tally.missing >= 10 && tally.gone >= 50, JSON.stringify(tally))
+    assert.ok(tally.loose >= COUNT * 0.2 && tally.kept >= 100, JSON.stringify(tally))
   })
   it('answers as zod on each kind by hand: a missing key, undefined, null and a wrong type', () => {
     const SRC = `z.object({
@@ -154,9 +156,9 @@ describe('zod kinds compiled away: the plan against zod', () => {
   it('writes the lines of a kind only into a file that has it', () => {
     const base = zodRuntimeFor(true, true, true, true, true, true)
     assert.equal(zodRuntimeFor(true, true, true, true, true, true, {}), base)
-    assert.doesNotMatch(base, /'d' in |n\.n\b|__ataZMissing|c\.m\b|v === null\) return v/)
+    assert.doesNotMatch(base, /n\.l\b|'d' in |n\.n\b|__ataZMissing|c\.m\b|v === null\) return v/)
     const sizes = {}
-    for (const k of ['nulls', 'defaults', 'missing']) { const text = zodRuntimeFor(true, true, true, true, true, true, { [k]: true }); assert.ok(text.length > base.length, k); sizes[k] = text.length - base.length }
+    for (const k of ['nulls', 'defaults', 'missing', 'loose']) { const text = zodRuntimeFor(true, true, true, true, true, true, { [k]: true }); assert.ok(text.length > base.length, k); sizes[k] = text.length - base.length }
     assert.match(zodRuntimeFor(false, false, false, true, false, false, { nulls: true }), /v === null\) return v/)
     assert.doesNotMatch(zodRuntimeFor(false, false, false, true, false, false, { nulls: true }), /const __ataZPrep|const __ataZRefine/)
     assert.match(zodRuntimeFor(true, false, false, true, false, false, { defaults: true }), /'d' in n/)

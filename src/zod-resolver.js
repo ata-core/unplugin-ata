@@ -22,10 +22,10 @@
 // nested objects, arrays of these, and refine where its function reads only
 // its argument, and strict objects; nullable(), nullish() and optional()
 // around any of them in any order, default() with a constant the field
-// itself passes, any() and unknown(). Refused: unions, a refine that
-// reads more, transform, catch, a default the field would refuse, coerce on
-// anything but a number, a rewrite between two checks, loose and catchall
-// objects, zod 3.
+// itself passes, any() and unknown(), loose objects. Refused: unions, a
+// refine that reads more, transform, catch, a default the field would
+// refuse, coerce on anything but a number, a rewrite between two checks, an
+// object with a catchall of its own, zod 3.
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { closesOver } from './zod.js'
@@ -47,9 +47,9 @@ const without = (text, part) => text.replace(new RegExp(`//<${part}>\\n[\\s\\S]*
 // that runs refine functions only where a plan of the file needs them. The
 // rest reaches them only through a plan that says so.
 // `kinds`: the parts only a plan with that kind of field reaches, { nulls,
-// defaults, missing }: a nullable field, a default, a field of any() or
-// unknown() whose key has to be there.
-export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false, kinds = {}) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat], ['nulls', !!kinds.nulls], ['defaults', !!kinds.defaults], ['missing', !!kinds.missing]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
+// defaults, missing, loose }: a nullable field, a default, a field of any()
+// or unknown() whose key has to be there, a loose object.
+export const zodRuntimeFor = (rewrites, refines, strict, resolver = true, parse = false, flat = false, kinds = {}) => bare([['rewrites', rewrites], ['refines', refines], ['strict', strict], ['resolver', resolver], ['parse', parse], ['flat', flat], ['nulls', !!kinds.nulls], ['defaults', !!kinds.defaults], ['missing', !!kinds.missing], ['loose', !!kinds.loose]].reduce((text, [part, kept]) => kept ? text : without(text, part), RT_TEXT))
 export const ZOD_RUNTIME_PLAIN = zodRuntimeFor(false, false, false)
 export const ZOD_RUNTIME_IMPORTS = "import { toNestErrors as __ataZNest, validateFieldsNatively as __ataZNative } from '@hookform/resolvers';\nimport { appendErrors as __ataZAppend } from 'react-hook-form';\n"
 // The same text as functions of this process: selfCheck uses the issue list
@@ -306,8 +306,12 @@ export function planZod (schema) {
       // about the fields. The page finds those keys itself, as zod does
       // (every enumerable key, an inherited one and one holding undefined
       // included), so the written schema says nothing about them.
-      if (def.catchall) {
-        if (def.catchall._zod.def.type !== 'never') no('a loose or catchall object is not carried')
+      // A loose object (z.looseObject, .loose(), .passthrough()): zod hands
+      // back every key it was not told about, after the fields. The page
+      // copies them the same way, so the written schema says nothing of them.
+      const rest = def.catchall ? def.catchall._zod.def : null
+      if (rest && (rest.type === 'unknown' || rest.type === 'any') && !(rest.checks || []).length) { here.l = 1; kinds.loose = true } else if (def.catchall) {
+        if (rest.type !== 'never') no('a loose or catchall object is not carried')
         const said = [['\u0000a'], ['\u0000a', '\u0000b']].map((keys) => { const hit = issuesOf(node, Object.fromEntries(keys.map((k) => [k, 1]))).filter((i) => i.path.length === 0 && i.code === 'unrecognized_keys'); if (hit.length !== 1) no('zod did not report an unknown key of a strict object the way the build expects'); return hit[0].message })
         if (said[0] === 'Unrecognized key: "\u0000a"' && said[1] === 'Unrecognized keys: "\u0000a", "\u0000b"') here.s = 1
         else if (said[0] === said[1]) here.s = said[0]

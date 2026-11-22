@@ -89,7 +89,8 @@ export function kindForms (seed0, count) {
   const obj = (depth) => {
     const kids = {}; const n = 1 + int(4)
     for (let i = 0; i < n; i++) kids[pick(['a', 'b', 'name', 'x/y', 'k~1']) + i] = wrap(depth < 2 && maybe(0.2) ? obj(depth + 1) : maybe(0.2) ? arr(depth) : leaf(), false)
-    let src = `${maybe(0.25) ? 'z.strictObject' : 'z.object'}({ ${Object.entries(kids).map(([k, f]) => `${lit(k)}: ${f.src}`).join(', ')} })`
+    let src = `${pick(['z.strictObject', 'z.looseObject', 'z.object', 'z.object'])}({ ${Object.entries(kids).map(([k, f]) => `${lit(k)}: ${f.src}`).join(', ')} })`
+    if (src.startsWith('z.object') && maybe(0.15)) src += pick(['.passthrough()', '.loose()'])
     if (maybe(0.2)) src += `.refine((v) => Object.keys(v).length !== 2${maybe(0.5) ? ", 'Not two'" : ''})`
     const f = { src, kids }
     f.ok = [sample(f)]; f.d = [{}, sample(f)]
@@ -103,7 +104,9 @@ export function kindForms (seed0, count) {
     const f = obj(0)
     const base = sample(f)
     const at = places(f, [], [])
-    const docs = [base, {}]
+    const docs = [base, {}, { ...clone(base), extra: 1, more: undefined }, Object.assign(Object.create({ inherited: 1 }), clone(base), { zz: 'a' }), JSON.parse('{"a":1,"__proto__":{"b":2}}')]
+    // A key the schema does not name, in each nested object.
+    for (const ip of at) { let v = base; for (const k of ip) v = v[k]; if (v && typeof v === 'object' && !Array.isArray(v)) docs.push(set(base, ip.concat('extra'), 1, false), set(base, ip.concat('more'), undefined, false)) }
     for (const ip of at) { docs.push(set(base, ip, undefined, true)); for (const v of WRONG) docs.push(set(base, ip, v, false)) }
     // Several places wrong at once.
     for (let j = 0; j < 12 && at.length > 1; j++) { let d = base; for (const ip of at) if (maybe(0.3)) { try { d = set(d, ip, pick(WRONG), maybe(0.3)) } catch { /* its parent is no longer an object */ } } docs.push(d) }

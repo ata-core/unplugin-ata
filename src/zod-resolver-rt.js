@@ -29,6 +29,11 @@ const __ataZStrip = (P, pat, v) => {
   if (!n.k) return n.x && typeof v === 'string' ? __ataZOps(n.x, v) : v
   const out = {}
   for (const key of n.k) if (key in v) { const c = v[key]; out[key] = c === undefined ? c : __ataZStrip(P, pat + '/' + __ataZEsc(key), c) }
+//<loose>
+  // A loose object: the keys the schema does not name, after its fields, as
+  // they came (an inherited one too, and never one named __proto__).
+  if (n.l) for (const key in v) if (key !== '__proto__' && !n.k.includes(key)) out[key] = v[key]
+//</loose>
   return out
 }
 //<rewrites>
