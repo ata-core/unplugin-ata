@@ -135,6 +135,22 @@ describe('zod kinds compiled away: the plan against zod', () => {
       assert.equal(check(), null)
     }
   })
+  it('reads a key named __proto__ as a key, where the document is copied for a rewrite or a default', () => {
+    // JSON.parse writes such a key as the object's own. Copied by
+    // assignment it became the copy's prototype, and a field missing from the
+    // document was then read from it: a number handed back for an optional
+    // string.
+    for (const schema of [z.object({ a: z.string().trim(), b: z.string().optional() }), z.object({ a: z.string().default('x'), b: z.string().optional() }), z.object({ a: z.coerce.number(), b: z.object({ c: z.string().optional() }) })]) {
+      const p = planned(schema)
+      assert.equal(p.why, undefined); assert.equal(p.said, null)
+      const mine = RT.schema({ validate: p.validate }, p.plan.table, p.plan.paths, p.plan.refines, p.plan.fns)
+      for (const text of ['{"a":" x ","__proto__":{"b":1}}', '{"a":"1","b":{"__proto__":{"c":1}},"__proto__":{"b":1}}', '{"__proto__":{"a":"x","b":"y"}}', '{"a":"3","b":{"c":"x","__proto__":{"c":2}}}']) {
+        const want = read(schema.safeParse(JSON.parse(text))); const got = read(mine.safeParse(JSON.parse(text)))
+        assert.equal(show(got), show(want), text)
+        if (got.success) assert.equal(Object.getPrototypeOf(got.data), Object.prototype)
+      }
+    }
+  })
   it('writes the lines of a kind only into a file that has it', () => {
     const base = zodRuntimeFor(true, true, true, true, true, true)
     assert.equal(zodRuntimeFor(true, true, true, true, true, true, {}), base)

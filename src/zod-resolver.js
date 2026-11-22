@@ -385,7 +385,7 @@ const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefin
 // check compiled from plan.json with plain errors.
 export function selfCheck (schema, plan, validate, parse = false) {
   const leaves = []; const arrays = []; const objects = []
-  const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) o[k] = copyOf(d[k]); return o }
+  const copyOf = (d) => { if (Array.isArray(d)) return d.map(copyOf); if (d === null || typeof d !== 'object' || Object.getPrototypeOf(d) !== Object.prototype) return d; const o = {}; for (const k of Object.keys(d)) { if (k === '__proto__') Object.defineProperty(o, k, { value: copyOf(d[k]), enumerable: true, writable: true, configurable: true }); else o[k] = copyOf(d[k]) } return o }
   const good = (node, ip) => {
     let def = node._zod.def; let optional = false
     // The sample is one the field itself takes, under optional(), nullable()
@@ -413,8 +413,14 @@ export function selfCheck (schema, plan, validate, parse = false) {
   }
   const base = good(schema, [])
   const copy = copyOf
+  const at0 = (d, ip) => { let v = d; for (const k of ip) v = v[k]; return v }
   const set = (d, ip, v, drop) => { const o = copy(d); let at = o; for (let i = 0; i < ip.length - 1; i++) at = at[ip[i]]; if (drop) delete at[ip[ip.length - 1]]; else at[ip[ip.length - 1]] = v; return o }
   const docs = [base, {}, { ...copy(base), ['\u0000extra']: 1 }]
+  // A key named __proto__, as JSON.parse writes one: it is a key like any
+  // other and the fields it holds are not the document's.
+  const own = (d, held) => Object.defineProperty(copy(d), '__proto__', { value: held, enumerable: true, writable: true, configurable: true })
+  docs.push(own({}, copy(base)), own(base, { '\u0000extra': 1 }))
+  for (const ip of leaves) if (ip.length === 1) docs.push(own(set(base, ip, undefined, true), { [ip[0]]: 1 }), own(set(base, ip, undefined, true), { [ip[0]]: at0(base, ip) }))
   // safeParse is handed anything, not only what a form holds.
   if (parse) docs.push(undefined, null, 'a', '', 0, 1, NaN, true, false, [], [base], new Date(0), Object.assign(Object.create({ inherited: 1 }), copy(base)))
   for (const ip of leaves) { docs.push(set(base, ip, undefined, true)); for (const v of POOL) docs.push(set(base, ip, v, false)) }
