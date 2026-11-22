@@ -116,6 +116,13 @@ describe('zod kinds compiled away: the plan against zod', () => {
     const full = { ...bare, any: 1, unk: 1 }
     assert.notEqual(mine.safeParse(full).data.dl, mine.safeParse(full).data.dl)
     assert.notEqual(schema.safeParse(full).data.dl, schema.safeParse(full).data.dl)
+    // One that is handed back as it is (under any()) too: changing an answer
+    // does not change the next.
+    const held = z.object({ a: z.any().default({ n: 1 }), l: z.unknown().default(['x']) })
+    const hp = planned(held)
+    assert.equal(hp.why, undefined); assert.equal(hp.said, null)
+    const hm = RT.schema({ validate: hp.validate }, hp.plan.table, hp.plan.paths, hp.plan.refines, hp.plan.fns)
+    for (const s of [held, hm]) { const first = s.safeParse({}).data; first.a.n = 2; first.l.push('y'); assert.deepEqual(s.safeParse({}).data, { a: { n: 1 }, l: ['x'] }) }
   })
   it('the build-time check notices a kind that is carried wrongly', () => {
     const schema = z.object({ n: z.string().min(2).nullable(), o: z.object({ a: z.string() }).nullish(), d: z.string().default('x'), dl: z.array(z.number()).default([1]), any: z.any(), q: z.number().nullish() })
@@ -142,14 +149,14 @@ describe('zod kinds compiled away: the plan against zod', () => {
     // assignment it became the copy's prototype, and a field missing from the
     // document was then read from it: a number handed back for an optional
     // string.
-    for (const schema of [z.object({ a: z.string().trim(), b: z.string().optional() }), z.object({ a: z.string().default('x'), b: z.string().optional() }), z.object({ a: z.coerce.number(), b: z.object({ c: z.string().optional() }) })]) {
+    for (const schema of [z.object({ a: z.string().trim(), b: z.string().optional() }), z.object({ a: z.string().default('x'), b: z.string().optional() }), z.object({ a: z.coerce.number(), b: z.object({ c: z.string().optional() }) }), z.looseObject({ a: z.string(), b: z.looseObject({ c: z.string().optional() }).optional() }), z.looseObject({ a: z.string().trim(), b: z.unknown().optional() })]) {
       const p = planned(schema)
       assert.equal(p.why, undefined); assert.equal(p.said, null)
       const mine = RT.schema({ validate: p.validate }, p.plan.table, p.plan.paths, p.plan.refines, p.plan.fns)
       for (const text of ['{"a":" x ","__proto__":{"b":1}}', '{"a":"1","b":{"__proto__":{"c":1}},"__proto__":{"b":1}}', '{"__proto__":{"a":"x","b":"y"}}', '{"a":"3","b":{"c":"x","__proto__":{"c":2}}}']) {
         const want = read(schema.safeParse(JSON.parse(text))); const got = read(mine.safeParse(JSON.parse(text)))
         assert.equal(show(got), show(want), text)
-        if (got.success) assert.equal(Object.getPrototypeOf(got.data), Object.prototype)
+        if (got.success) { const theirs = schema.safeParse(JSON.parse(text)).data; assert.equal(Object.getPrototypeOf(got.data), Object.prototype); assert.deepEqual(Object.getOwnPropertyNames(got.data), Object.getOwnPropertyNames(theirs)); if (got.data.b && typeof got.data.b === 'object') { assert.equal(Object.getPrototypeOf(got.data.b), Object.getPrototypeOf(theirs.b)); assert.deepEqual(Object.getOwnPropertyNames(got.data.b), Object.getOwnPropertyNames(theirs.b)) } }
       }
     }
   })

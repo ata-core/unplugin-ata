@@ -380,7 +380,9 @@ export function zodFor (file, source, kind) {
 
 // A value of each kind a form can hand a field, and values that pass a leaf.
 const POOL = [undefined, null, '', ' ', 'a', 'ab', 'abc', '@ab', 'A!1', 'Ab!1x', 'abc123', 'user_name', 'Abcdef1!', 'Passw0rd!', '123456', '1234567890', '42', ' 7 ', '1e3', '2024-01-01', 'https://example.com', '+15555550100', '  ab ', ' A@B.CO ', 'ABC', 'Stra\u00dfe', 'abcdefghijklmnopqrstuvwxyz0123456789', 'a@b.co', 'A1b2c3d4', '12345', '123e4567-e89b-42d3-a456-426614174000', 0, 1, -1, 0.5, 17, 18, 100, 1e9, 2 ** 60, NaN, Infinity, true, false, [], ['a'], ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'], {}, { length: 1 }, { length: 99 }, new Date(0)]
-const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefined' : typeof v === 'number' && !Number.isFinite(v) ? '\u0000' + String(v) : v)
+// An object that is not a plain one is written with what it inherits, so a
+// prototype an answer should not have is a difference like any other.
+const show = (x) => JSON.stringify(x, (k, v) => v === undefined ? '\u0000undefined' : typeof v === 'number' && !Number.isFinite(v) ? '\u0000' + String(v) : v !== null && typeof v === 'object' && !Array.isArray(v) && k !== '\u0000proto' && Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null ? { '\u0000proto': Object.getPrototypeOf(v), ...v } : v)
 
 // Whether the plan answers as the schema does: zod's issues (path, code,
 // message, in order) and the data it returns, on a document that passes, on
