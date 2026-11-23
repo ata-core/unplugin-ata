@@ -90,6 +90,15 @@ export interface Options {
    */
   zodSafeParse?: boolean
   /**
+   * A `zodResolver` or `safeParse` call in a file built for a browser is
+   * left as written where zod stays on the page through a module the file
+   * still imports (an env module, a registry of components, a module of
+   * schemas and constants): the compiled check would be added to zod, not
+   * put in its place. The report names the module. `true` compiles every
+   * call the build can read, whatever else the page loads. Default false.
+   */
+  zodAlways?: boolean
+  /**
    * OpenAPI documents (3.0 or 3.1; JSON, or YAML with the `yaml` package) to
    * write request body validators for: `openapi.json` gives
    * `openapi.validators.mjs` and `.d.mts` beside it, one `<operation>Body`

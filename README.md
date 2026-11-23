@@ -267,6 +267,7 @@ prints the same as data. A build prints the same lines in its report.
 | `smallFormats` | `'auto'` | A written module checks `email`, `uri` and `uri-reference` with ata-validator's smaller regular expressions, which give the same answers as its scanners in fewer bytes and take about 20 to 35 ns longer a check. `'auto'` takes them where the build knows the code goes to a browser: webpack and Rspack by the compiler's target, Vite outside an ssr build, esbuild by `platform`, Turbopack by the loader's target. Rollup, Rolldown and Bun keep the scanners unless you pass `true`. Needs ata-validator 1.64.0; an older one keeps the scanners. |
 | `zodResolver` | `true` | Compile `zodResolver(schema)` from `@hookform/resolvers/zod` away where the schema is written in the file from parts the build carries, so zod leaves that page. See [react-hook-form with zod](#react-hook-form-with-zod-zodresolverschema). |
 | `zodSafeParse` | `true` | Answer `schema.safeParse(value)` on a zod 4 schema with a check compiled at build time, where the file uses the schema for nothing else and reads the result only through `success`, `data` and each issue's `code`, `path` and `message`, so zod leaves that file. See [zod without a form library](#zod-without-a-form-library-schemasafeparsevalue). |
+| `zodAlways` | `false` | A `zodResolver` or `safeParse` call in a file built for a browser is left as written where zod stays on the page through a module the file still imports, since the compiled check would then be added to zod instead of replacing it. `true` compiles every call the build can read. See [where zod stays on the page](#where-zod-stays-on-the-page). |
 | `sharedErrors` | `'auto'` | Where a compiled validator's error detail comes from. A compact module carries its verdict and its schema and takes its errors from `ata-validator/error-runtime`, which the bundle holds once. `'auto'` scans the project's sources at build start (skipping `node_modules`, build output and test files), adds up what the replaceable calls a page loads together would save, and uses the runtime when the total pays for it; a file the scan did not see decides alone, which takes a schema of several hundred properties. Measured on projects of 1 to 40 SchemaStore schemas, no bundle came out bigger than with `false`, and 40 schemas went from 724 KB to 405 KB gzipped, on ata-validator 1.51.0. `true` writes every schema that allows it compact, and `false` never. The scan adds little to the build, measured in separate processes with esbuild: 84 to 85 ms for three validators, 681 to 715 ms for forty. Errors and verdicts are the same either way; a rejected document costs more, since its errors come from an interpreted walk. Needs ata-validator 1.50.0; with an older one every module stays self-contained, as before. |
 
 ## compileAway: keep `new Validator`, drop the compiler
@@ -487,6 +488,49 @@ and a call that passes options. An application that changes zod's messages
 as a whole (`z.config(...)`, a locale, a global error map) gets no call
 replaced, since the build would learn messages the page does not show.
 `zodResolver: false` turns the rewrite off.
+
+#### Where zod stays on the page
+
+The compiled form takes zod out of a file. Where a module the file still
+imports brings zod with it, the page keeps zod and the compiled check comes
+on top of it. Three shapes of this were found in real applications: an env
+module in the t3-env style, a registry of components that reaches a form the
+build keeps, and a module of schemas and constants the file reads a constant
+from. One form page with its application's env module beside it was 115,046 B
+gzipped as written and 116,377 B with the form compiled (esbuild, zod 4.6.7).
+
+So in a file built for a browser, a `zodResolver` or `safeParse` call the
+build could compile is left as written when zod stays, and the report names
+the module:
+
+```
+[unplugin-ata] left as written: app/signup/Form.tsx:12 zodResolver(schema): compiled form would add bytes: zod stays through env.ts
+```
+
+The build reads this from the file's static imports as its own rewrite leaves
+them, and from each module under it the same way, so a form under a form does
+not keep zod for a schema the build takes out. A type import is not followed,
+nor an import of a TypeScript file that no value is read from, a dynamic
+`import()`, or a module that starts with `'use server'`.
+
+The rule is asked where the build knows the code goes to a browser, by the
+targets `smallFormats` reads. Where the target is not known (Rollup, Rolldown,
+Bun, `unplugin-ata scan`) it is asked for a file that says `'use client'` or
+imports `zodResolver`. A build for a server compiles as before.
+
+What it does not see: zod that comes through an installed package, through a
+layout or another component on the same page that the file does not import,
+and zod that stays in the file itself for another call. These pages are
+compiled as before. It reads imports, not the bundler's chunks, so it can also
+leave a call where the bundler would have dropped zod from the module it
+names. On six open source applications, 74 client files had every call
+compiled; the rule left 51 of them as written, and an esbuild bundle of each
+file kept zod in 47 of those and dropped it from 4, all four through one
+barrel file that re-exports a module whose zod is only read inside functions
+the page never calls.
+
+`zodAlways: true` turns the rule off and compiles every call the build can
+read.
 
 ### zod without a form library: `schema.safeParse(value)`
 

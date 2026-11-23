@@ -792,7 +792,103 @@ function namesRichErrors(node, ctx) {
   return opts === NOT_STATIC || opts === null || typeof opts !== 'object' || Object.prototype.hasOwnProperty.call(opts, 'richErrors')
 }
 
+// What a module loads with it once the build has had it: the specifiers of
+// the imports and re-exports that are still there at run time, and whether
+// one of them is zod. An import TypeScript erases is not one: `import type`,
+// and in a TypeScript file an import none of whose names is read as a value.
+// A module that starts with 'use server' is a reference on the client, so
+// nothing of it loads there. null where the text does not parse.
+const TS_FILE = /\.[cm]?tsx?$/
+const ZOD_SPEC = /^(?:zod(?:\/.*)?|@hookform\/resolvers\/zod)$/
+export function runtimeImports(code, file) {
+  let ast
+  try { ast = parse(code, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: false }) } catch { return null }
+  if ((ast.program.directives || []).some((d) => d.value && d.value.value === 'use server')) return { s: [], zod: false, server: true }
+  const ts = TS_FILE.test(file)
+  const s = []; let zod = false
+  const edge = (spec) => { if (typeof spec !== 'string') return; if (ZOD_SPEC.test(spec)) zod = true; else s.push(spec) }
+  const named = []
+  const locals = new Map()
+  for (const stmt of ast.program.body) {
+    if (stmt.type === 'ImportDeclaration') {
+      if (stmt.importKind === 'type') continue
+      if (!ts || stmt.specifiers.length === 0) { edge(stmt.source.value); continue }
+      const entry = { spec: stmt.source.value, used: false }
+      named.push(entry)
+      for (const sp of stmt.specifiers) if (sp.importKind !== 'type') locals.set(sp.local.name, entry)
+    } else if (stmt.type === 'ExportAllDeclaration') {
+      if (stmt.exportKind !== 'type') edge(stmt.source.value)
+    } else if (stmt.type === 'ExportNamedDeclaration' && stmt.source && stmt.exportKind !== 'type') {
+      if (stmt.specifiers.length === 0 || stmt.specifiers.some((sp) => sp.exportKind !== 'type')) edge(stmt.source.value)
+    }
+  }
+  if (locals.size) {
+    const seen = new Set()
+    const go = (n, parent, key, typed) => {
+      if (seen.has(n)) return
+      seen.add(n)
+      if (n.type === 'ImportDeclaration') return
+      if (n.type.startsWith('TS') && n.type !== 'TSAsExpression' && n.type !== 'TSSatisfiesExpression' && n.type !== 'TSNonNullExpression' && n.type !== 'TSTypeAssertion' && n.type !== 'TSInstantiationExpression' && n.type !== 'TSExportAssignment' && n.type !== 'TSParameterProperty') typed = true
+      if (n.type === 'ExportNamedDeclaration' && n.exportKind === 'type') typed = true
+      if (n.type === 'ExportSpecifier' && n.exportKind === 'type') typed = true
+      if (!typed && (n.type === 'Identifier' || n.type === 'JSXIdentifier') && locals.has(n.name)) {
+        const p = parent
+        const notName = p && (((p.type === 'MemberExpression' || p.type === 'OptionalMemberExpression' || p.type === 'JSXMemberExpression') && key === 'property' && !p.computed) ||
+          ((p.type === 'ObjectProperty' || p.type === 'ObjectMethod' || p.type === 'ClassProperty' || p.type === 'ClassMethod') && key === 'key' && !p.computed && !p.shorthand) ||
+          p.type === 'JSXAttribute' || p.type === 'LabeledStatement' || p.type === 'BreakStatement' || p.type === 'ContinueStatement' ||
+          (p.type === 'ExportSpecifier' && key === 'exported'))
+        if (!notName) locals.get(n.name).used = true
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'start' || k === 'end' || k === 'range' || k === 'extra' || k === 'leadingComments' || k === 'trailingComments' || k === 'innerComments' || k[0] === '_') continue
+        const v = n[k]
+        // The annotation on a name, the type arguments of a call and the
+        // like are types wherever they hang.
+        const t = typed || k === 'typeAnnotation' || k === 'returnType' || k === 'typeParameters' || k === 'typeArguments' || k === 'superTypeParameters' || k === 'implements'
+        if (Array.isArray(v)) { for (const c of v) if (c && typeof c.type === 'string') go(c, n, k, t) } else if (v && typeof v.type === 'string') go(v, n, k, t)
+      }
+    }
+    go(ast.program, null, null, false)
+  }
+  for (const e of named) if (e.used) edge(e.spec)
+  return { s, zod, server: false }
+}
+
+// The build with one rule over the rewrite below: a zodResolver or safeParse
+// call is left as written where zod stays on the page anyway. The compiled
+// form takes zod out of a file; where a module the file still imports brings
+// zod with it (an env module, a registry of components, a module of schemas
+// and constants), the page keeps zod and the compiled check comes on top.
+// `options.zodStays(code)` is asked with the file as the rewrite leaves it
+// and names the module zod stays through, or nothing. The file is then
+// written again without the zod rewrites, and each call the first pass
+// took is reported as kept, with that module.
 export function compileAway(code, id, ata, options) {
+  const stays = options && typeof options.zodStays === 'function' ? options.zodStays : null
+  if (!stays) return rewrite(code, id, ata, options)
+  const kept = Array.isArray(options.kept) ? options.kept : null
+  const keptAt = kept ? kept.length : 0
+  const verifying = options.verifying instanceof Map ? options.verifying : null
+  const verified = verifying ? new Set(verifying.keys()) : null
+  const sites = []
+  const out = rewrite(code, id, ata, { ...options, zodSites: sites })
+  if (!out || sites.length === 0) return out
+  const through = stays(out.code)
+  if (!through) return out
+  // Nothing of the first pass is left: its report lines and what it handed
+  // to `verify`.
+  const zodKept = kept ? kept.slice(keptAt).filter((k) => k.zod) : []
+  if (kept) kept.length = keptAt
+  if (verifying) for (const k of [...verifying.keys()]) if (!verified.has(k)) verifying.delete(k)
+  const again = rewrite(code, id, ata, { ...options, zodResolver: false, zodSafeParse: false })
+  if (kept) {
+    for (const k of zodKept) kept.push(k)
+    for (const site of sites) kept.push({ line: site.line, reason: `${site.label}: compiled form would add bytes: zod stays through ${through}`, zod: true, ...(site.parse ? { parse: true } : {}), stays: true })
+  }
+  return again
+}
+
+function rewrite(code, id, ata, options) {
   const errorFields = options && options.errorFields === 'all' ? 'all' : 'auto'
   const sharedErrors = options && options.sharedErrors !== undefined ? options.sharedErrors : 'auto'
   const collect = options && Array.isArray(options.collect) ? options.collect : null
@@ -1252,6 +1348,7 @@ export function compileAway(code, id, ata, options) {
       for (const f of take) {
         const index = modules.length
         f.ir.place(index, f.ir.src, false)
+        if (Array.isArray(options.zodSites)) options.zodSites.push({ line: f.call.loc ? f.call.loc.start.line : null, parse: !!f.parse, label: f.parse ? `${f.name}.safeParse()` : `zodResolver(${f.call.arguments[0] && f.call.arguments[0].type === 'Identifier' ? f.call.arguments[0].name : '...'})` })
         if (f.plan.rewrites) zodRewrites = true
         if (f.plan.refines) zodRefines = true
         if (f.plan.strict) zodStrict = true

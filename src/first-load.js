@@ -175,3 +175,22 @@ export async function perLoad(loads, candidates, pays) {
     if (!left) return keep
   }
 }
+
+// The nearest module under `start` that still imports zod at run time, or
+// null: the files a file loads with it, breadth first, read as the build
+// leaves each of them. `facts(file)` gives { zod, files, server } for a
+// module (src/compile-away.js runtimeImports, its specifiers resolved), or
+// null for one it cannot read, which is then taken to load nothing. A module
+// under 'use server' is not followed: the client holds a reference to it.
+// `from` is the file asked about and is never the answer.
+export function zodThrough(from, start, facts) {
+  const seen = new Set([from, ...start])
+  const queue = [...start]
+  for (let i = 0; i < queue.length; i++) {
+    const f = facts(queue[i])
+    if (!f || f.server) continue
+    if (f.zod) return queue[i]
+    for (const t of f.files) if (!seen.has(t)) { seen.add(t); queue.push(t) }
+  }
+  return null
+}

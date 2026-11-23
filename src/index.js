@@ -11,8 +11,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { createSession, normalizeAlias, compile, __internal } from './core.js'
-import { compileAway, sharedSavings, sharedPays, tableForms, tableFormsPay, clearSizes } from './compile-away.js'
-import { importsOf, resolverFor, aliasesFor, firstLoads, perLoad, htmlScripts } from './first-load.js'
+import { compileAway, runtimeImports, sharedSavings, sharedPays, tableForms, tableFormsPay, clearSizes } from './compile-away.js'
+import { importsOf, resolverFor, aliasesFor, firstLoads, perLoad, htmlScripts, zodThrough } from './first-load.js'
+import { workspaceResolve, relativeResolve } from './workspace-resolve.js'
 
 const SOURCE = /\.[cm]?[jt]sx?$/
 
@@ -130,8 +131,10 @@ export const unpluginFactory = (userOptions = {}) => {
   // webpack and Rspack (the compiler's target), Vite (the ssr flag), esbuild
   // (the platform) and Turbopack (the loader's target); elsewhere the
   // scanner stays.
-  const forBrowser = (hook) => {
-    if (typeof userOptions.smallFormats === 'boolean') return userOptions.smallFormats
+  const forBrowser = (hook) => typeof userOptions.smallFormats === 'boolean' ? userOptions.smallFormats : targetsBrowser(hook)
+  // The target alone, whatever smallFormats says: a zod call is left as
+  // written only in a file that goes to a browser (zodStaysFor).
+  const targetsBrowser = (hook) => {
     if (hook && typeof hook.target === 'string') return hook.target === 'web'
     if (session.compiler) {
       const o = session.compiler.options || {}
@@ -141,6 +144,59 @@ export const unpluginFactory = (userOptions = {}) => {
     if (session.vite) return !session.viteSsr && !(hook && hook.ssr)
     if (session.esbuildPlatform !== undefined) return session.esbuildPlatform === 'browser'
     return false
+  }
+  // Whether the target is known at all: under Rollup, Rolldown, Bun and the
+  // scan it is not.
+  const targetKnown = (hook) => !!((hook && typeof hook.target === 'string') || session.compiler || session.vite || session.esbuildPlatform !== undefined)
+
+  // A zodResolver or safeParse call is left as written in a file that goes
+  // to a browser where zod stays on the page through a module the file still
+  // imports: the compiled check would come on top of zod, not in its place
+  // (src/compile-away.js compileAway, src/first-load.js zodThrough). A file
+  // built for a server is not asked: no page loads it. Where the target is
+  // not known, a file that says 'use client' or imports zodResolver, which
+  // is a hook's argument, is taken as one for a browser. `zodAlways: true`
+  // compiles every call the build can read, as before.
+  const USE_CLIENT = /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*['"]use client['"]/
+  const SITE_FILE = (code, parseOn) => code.includes('@hookform/resolvers/zod') || (parseOn && code.includes('.safeParse('))
+  const resolveFrom = (spec, from) => (session.resolveImport ? session.resolveImport(spec, from) : null) || relativeResolve(spec, from) || workspaceResolve(spec, from)
+  const filesOf = (r, from) => { const out = []; for (const spec of r.s) { const t = resolveFrom(spec, from); if (t && t !== from) out.push(path.resolve(t)) } return out }
+  const zodStaysFor = (file, code, hook, api, zodOptions) => {
+    if (userOptions.zodAlways === true || session.onePass) return undefined
+    const forPage = targetKnown(hook) ? targetsBrowser(hook) : (USE_CLIENT.test(code.slice(0, 2000)) || code.includes('@hookform/resolvers/zod'))
+    if (!forPage) return undefined
+    if (!session.zodFacts) session.zodFacts = new Map()
+    // A module below the file, as the build leaves it: with its own calls
+    // compiled where they can be, so a form under a form does not keep zod
+    // for a schema the build takes out of it. Read once per version of the
+    // module.
+    const facts = (f) => {
+      let stat
+      try { stat = fs.statSync(f) } catch { return null }
+      const had = session.zodFacts.get(f)
+      if (had && had.mtime === stat.mtimeMs) return had.out
+      let out = null
+      session.zodFacts.set(f, { mtime: stat.mtimeMs, out })
+      try {
+        if (SOURCE.test(f) && stat.size <= 1 << 20) {
+          let text = fs.readFileSync(f, 'utf8')
+          if (SITE_FILE(text, zodOptions.zodSafeParse) && !f.split(/[\\/]/).includes('node_modules')) {
+            try { const r = compileAway(text, f, api, { ...zodOptions, sharedErrors: false }); if (r) text = r.code } catch {}
+          }
+          const r = runtimeImports(text, f)
+          if (r) out = { zod: r.zod, server: r.server, files: filesOf(r, f) }
+        }
+      } catch { out = null }
+      session.zodFacts.set(f, { mtime: stat.mtimeMs, out })
+      return out
+    }
+    const root = session.root || process.cwd()
+    return (written) => {
+      const r = runtimeImports(written, file)
+      if (!r) return null
+      const hit = zodThrough(path.resolve(file), filesOf(r, file), facts)
+      return hit ? path.relative(root, hit) : null
+    }
   }
 
   const hooks = {
@@ -171,6 +227,7 @@ export const unpluginFactory = (userOptions = {}) => {
       session.scanned = null
       session.scannedSources = null
       session.loads = null
+      session.zodFacts = null
       const resolved = (ids) => ids.map((id) => path.resolve(id))
       if (userOptions.compileAway !== false && (userOptions.sharedErrors === undefined || userOptions.sharedErrors === 'auto')) {
         const api = await session.api()
@@ -258,7 +315,11 @@ export const unpluginFactory = (userOptions = {}) => {
       // modules (see compile-away.js, `virtual`), served by load() below.
       const virtual = session.onePass ? (src) => { const id = `ata-compiled:${session.virtual.size}.js`; session.virtual.set(id, src); return id } : undefined
       const tableOn = userOptions.table === true || ((userOptions.table === undefined || userOptions.table === 'auto') && session.tableFiles instanceof Set && session.tableFiles.has(path.resolve(file)))
-      const out = compileAway(code, file, cachedApi(session, api), { zodResolver: userOptions.zodResolver !== false && session.zodConfigured === false, zodSafeParse: parseOn, watch: watchFile, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
+      // What a module below this file is read with (zodStaysFor): the zod
+      // rewrites as the build applies them to any file.
+      const zodOptions = { zodResolver: userOptions.zodResolver !== false && session.zodConfigured === false, zodSafeParse: userOptions.zodSafeParse !== false && session.zodConfigured === false, resolveImport: session.resolveImport, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) }
+      const zodStays = SITE_FILE(code, parseOn) && (zodOptions.zodResolver || parseOn) ? zodStaysFor(file, code, hook, cachedApi(session, api), zodOptions) : undefined
+      const out = compileAway(code, file, cachedApi(session, api), { zodStays, zodResolver: zodOptions.zodResolver, zodSafeParse: parseOn, watch: watchFile, resolveImport: session.resolveImport, table: tableOn, smallFormats: forBrowser(hook), errorFields: userOptions.errorFields, sharedErrors: scanned ? (session.sharedFiles && session.sharedFiles.has(path.resolve(file)) ? 'smaller' : false) : userOptions.sharedErrors, typeSchema: session.typeSchemas.schemaFor, kept, bunTarget: session.bunAot && api.bunTarget ? api.bunTarget : null, verifying: session.verifying, virtual, standardConsumers: userOptions.standardConsumers, ir: userOptions.ir === true || (userOptions.ir !== false && api.irDefault === true) })
       if (out || kept.length) session.report.set(path.resolve(file), { replaced: out ? out.replaced - (out.zod || 0) : 0, kinds: out ? out.kinds : null, kept, zod: out ? out.zod || 0 : 0, zodParse: out ? out.zodParse || 0 : 0 })
       return out ? { code: out.code, map: out.map } : null
     },
