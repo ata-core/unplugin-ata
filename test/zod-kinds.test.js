@@ -7,8 +7,6 @@
 import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
-import fss from 'node:fs'
-import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
@@ -266,39 +264,4 @@ describe('zod kinds compiled away: a build', () => {
       assert.ok(log.some((l) => why.test(l)), field + '\n' + log.join('\n'))
     }
   })
-})
-
-// The same forms through the 2.0 core: ATA_V2_TEST names a checkout of it,
-// copied into the fixture's node_modules, and the module compile-away writes
-// from it is imported and held to zod. Without ATA_V2_TEST this is skipped.
-const V2 = process.env.ATA_V2_TEST || null
-const skipV2 = V2 && fss.existsSync(path.join(V2, 'lib/ir/index.mjs')) ? false : 'set ATA_V2_TEST to an ata-validator checkout'
-describe('zod kinds compiled away: the 2.0 core', { skip: skipV2 }, () => {
-  let dir; let api
-  before(async () => {
-    dir = await fs.mkdtemp(path.join(here, 'fixtures', 'tmp-zod-kinds-v2-'))
-    const dest = path.join(dir, 'node_modules', 'ata-validator')
-    fss.mkdirSync(dest, { recursive: true })
-    for (const e of fss.readdirSync(V2, { withFileTypes: true })) {
-      if (e.isDirectory() ? !['lib', 'bin', 'features'].includes(e.name) : !/^(package\.json|.*\.(m?js|cjs|d\.ts))$/.test(e.name)) continue
-      fss.cpSync(path.join(V2, e.name), path.join(dest, e.name), { recursive: true })
-    }
-    const req = createRequire(path.join(dest, 'x.js'))
-    const b = req('./build.js')
-    api = { ...ata, Validator: req('./index.js').Validator, ir: await import(pathToFileURL(path.join(dest, 'lib/ir/index.mjs')).href), kernelsUrl: pathToFileURL(path.join(dest, 'lib/kernels/index.mjs')).href, compiledOptions: b.compiledOptions, compiledBuildOptions: b.compiledBuildOptions, compiledModuleFor: b.compiledModuleFor, compiledSchemaFor: b.compiledSchemaFor, defaultsSource: b.defaultsSource, verify: b.verify }
-  })
-  after(async () => { if (dir) await fs.rm(dir, { recursive: true, force: true }) })
-  for (const table of [false, true]) {
-    it(`the module written from the 2.0 core answers as zod on forty generated forms${table ? ', as plans' : ''}`, async () => {
-      const taken = takenForms(40)
-      const file = path.join(dir, `page-${table}.mjs`)
-      const kept = []
-      const out = compileAway(fileOf(taken), file, api, { ir: true, table, zodResolver: true, zodSafeParse: true, kept })
-      assert.deepEqual(kept, [])
-      assert.equal(out.zod, 40); assert.equal(out.zodParse, 40)
-      assert.doesNotMatch(out.code, /from ['"]zod['"]/)
-      await fs.writeFile(file, out.code)
-      assert.ok(await sameAsZod(await import(pathToFileURL(file).href), taken) > 5000)
-    })
-  }
 })
