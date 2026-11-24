@@ -478,7 +478,8 @@ written and zod stays on that page: unions, a check written after
 `nullable()` or `default()`, a default the field would refuse or rewrite, a
 default inside an array's items, `catch`, `prefault`, `url()` with
 `hostname`, `protocol` or `normalize` or with a check after it,
-a `refine` that reads a value from outside, an async one, `superRefine`,
+a `refine` that reads a value from outside (one that calls zod itself, or
+names a type in a cast, counts as reading one), an async one, `superRefine`,
 `transform`, `coerce` on anything but a number, a
 rewrite such as `trim` between two checks, an object with a catchall of
 its own (`.catchall(z.string())`), a strict object whose
@@ -489,6 +490,13 @@ as a whole (`z.config(...)`, a locale, a global error map) gets no call
 replaced, since the build would learn messages the page does not show.
 `zodResolver: false` turns the rewrite off.
 
+`nullable()`, `nullish()`, `default()`, `z.any()`, `z.unknown()` and loose
+objects are carried from 0.19.0; until then a form with one of them kept its
+call. From the same version a number that is not finite is reported in the
+words of the application's own zod (4.3.6 says `received number` where 4.6.7
+names the value), so a build on a zod that words it the earlier way no longer
+keeps a form for that message alone.
+
 #### Where zod stays on the page
 
 The compiled form takes zod out of a file. Where a module the file still
@@ -496,12 +504,13 @@ imports brings zod with it, the page keeps zod and the compiled check comes
 on top of it. Three shapes of this were found in real applications: an env
 module in the t3-env style, a registry of components that reaches a form the
 build keeps, and a module of schemas and constants the file reads a constant
-from. One form page with its application's env module beside it was 115,046 B
-gzipped as written and 116,377 B with the form compiled (esbuild, zod 4.6.7).
+from. One form page with its application's env module beside it is 115,046 B
+gzipped as written and 116,377 B with the form compiled (esbuild minified,
+gzip level 9, ata-validator 1.65.0, zod 4.6.7).
 
-So in a file built for a browser, a `zodResolver` or `safeParse` call the
-build could compile is left as written when zod stays, and the report names
-the module:
+So from 0.19.0, in a file built for a browser, a `zodResolver` or `safeParse`
+call the build could compile is left as written when zod stays, and the page
+is the 115,046 B it was. The report names the module:
 
 ```
 [unplugin-ata] left as written: app/signup/Form.tsx:12 zodResolver(schema): compiled form would add bytes: zod stays through env.ts
@@ -527,7 +536,12 @@ names. On six open source applications, 74 client files had every call
 compiled; the rule left 51 of them as written, and an esbuild bundle of each
 file kept zod in 47 of those and dropped it from 4, all four through one
 barrel file that re-exports a module whose zod is only read inside functions
-the page never calls.
+the page never calls. In those applications, at commits pinned in November
+2026, 23 of 167 `zodResolver` calls are compiled and drop zod: an esbuild
+bundle of each of their files holds none of it. The rule leaves 50 as written,
+and the other 94 are kept for a reason of their own (a module the build cannot
+find, a name it cannot read, a function in the schema, a kind above that is
+not carried).
 
 `zodAlways: true` turns the rule off and compiles every call the build can
 read.
