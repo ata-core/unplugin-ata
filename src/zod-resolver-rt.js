@@ -41,7 +41,11 @@ const __ataZPrep = (P, pat, v) => {
   // A coercion (3) takes whatever came, except nothing where nothing is allowed.
   if (!n.k) return n.w && (n.w[0] === 3 ? !(n.q && v === undefined) : typeof v === 'string') ? __ataZOps(n.w, v) : v
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return v
-  const out = Object.assign({}, v)
+  // Key by key: a key named __proto__ (JSON.parse makes one) is not a field
+  // and must not become the copy's prototype, where the fields would then be
+  // read from it.
+  const out = {}
+  for (const key in v) if (key !== '__proto__') out[key] = v[key]
   for (const key of n.k) if (key in v) out[key] = __ataZPrep(P, pat + '/' + __ataZEsc(key), v[key])
   return out
 }

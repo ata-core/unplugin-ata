@@ -211,6 +211,55 @@ describe('zodResolver compiled away: a build', () => {
     assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
     await same(mod.resolver)
   })
+  it('a JSON body with a __proto__ key does not change the values a rewriting form returns', async () => {
+    const SRCS = [
+      'z.object({ a: z.string().trim(), b: z.string().optional() })',
+      'z.object({ a: z.string().trim().min(1), b: z.string().optional(), c: z.number().optional() })',
+      'z.strictObject({ a: z.string().trim(), b: z.string().optional() })',
+    ]
+    const TEXTS = ['{"a":" x ","__proto__":{"b":1}}', '{"a":" x ","__proto__":{"b":"y","c":"z"}}', '{"__proto__":{"a":"x"}}', '{"a":" x "}']
+    for (const [i, src] of SRCS.entries()) {
+      const { text, mod } = await build(`proto${i}.js`, `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nexport const resolver = zodResolver(${src})\n`)
+      assert.match(text, /__ataZodResolver/)
+      assert.doesNotMatch(text, HAS_ZOD, 'zod is still in the bundle')
+      const real = zodResolver(new Function('z', `return ${src}`)(z))
+      for (const t of TEXTS) {
+        for (const o of OPTS) {
+          const got = await mod.resolver(JSON.parse(t), undefined, o)
+          const want = await real(JSON.parse(t), undefined, o)
+          assert.equal(show(got), show(want), `${src} on ${t}`)
+          assert.equal(Object.getPrototypeOf(got.values), Object.prototype, `${src} on ${t}: values keep the plain prototype`)
+        }
+      }
+    }
+    // A loose object hands unknown keys back: an own __proto__ key stays an own
+    // key, as zod returns it, and never becomes the prototype.
+    const LOOSE = 'z.looseObject({ a: z.string().trim(), b: z.string().optional() })'
+    const { mod: loose } = await build('proto-loose.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nexport const resolver = zodResolver(${LOOSE})\n`)
+    const realLoose = zodResolver(new Function('z', `return ${LOOSE}`)(z))
+    for (const t of TEXTS) {
+      for (const o of OPTS) {
+        const got = await loose.resolver(JSON.parse(t), undefined, o)
+        const want = await realLoose(JSON.parse(t), undefined, o)
+        assert.equal(show(got), show(want), `${LOOSE} on ${t}`)
+        assert.deepEqual(Object.keys(got.values), Object.keys(want.values), `${LOOSE} on ${t}: keys`)
+        assert.equal(Object.getPrototypeOf(got.values), Object.getPrototypeOf(want.values), `${LOOSE} on ${t}: prototype`)
+      }
+    }
+    // An in-process value with an inherited enumerable key: only own keys are
+    // the document's, as zod reads them.
+    for (const [i, src] of ['z.object({ a: z.string().trim(), b: z.string().optional() })', 'z.strictObject({ a: z.string().trim(), b: z.string().optional() })'].entries()) {
+      const { mod } = await build(`proto-inherited${i}.js`, `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nexport const resolver = zodResolver(${src})\n`)
+      const real = zodResolver(new Function('z', `return ${src}`)(z))
+      const doc = () => Object.assign(Object.create({ extra: 1, b: 2 }), { a: ' x ' })
+      for (const o of OPTS) {
+        const got = await mod.resolver(doc(), undefined, o)
+        const want = await real(doc(), undefined, o)
+        assert.equal(show(got), show(want), `${src} on an inherited key`)
+        assert.deepEqual(Object.keys(got.values), Object.keys(want.values), `${src} on an inherited key: keys`)
+      }
+    }
+  })
   it('replaces a form written the way zod 4 writes it: a strict object, z.email() and z.int()', async () => {
     const SRC = `z.strictObject({ email: z.email(), password: z.string().min(8).max(72), name: z.string().min(1).max(80), age: z.int().min(13).max(120).optional(), plan: z.enum(['free', 'pro', 'team']).optional(), terms: z.literal(true) })`
     const { text, mod } = await build('zod4.js', `import { zodResolver } from '@hookform/resolvers/zod'\nimport { z } from 'zod'\nconst signup = ${SRC}\nexport const resolver = zodResolver(signup)\nconst plain = z.object({ email: z.email() })\nexport const second = zodResolver(plain)\n`)
